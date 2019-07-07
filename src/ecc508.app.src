@@ -1,0 +1,16 @@
+{application, ecc508,
+ [{description, "An Erlang library for controlling the Microchip ECC508 crypto IC"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {applications,
+   [kernel,
+    stdlib,
+    erlang_ale
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {maintainers, ["Helium"]},
+  {licenses, ["Apache 2.0"]},
+  {links, [{"Github", "https://github.com/helium/nextgate/tree/ecc508"}]}
+ ]}.
