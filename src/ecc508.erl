@@ -13,8 +13,8 @@
          pause/2,
          read/3,
          write/3,
-         slot_config/2, write_config/2,
-         key_config/2
+         slot_config/2, mk_slot_config/1, write_config/2,
+         key_config/2, mk_key_config/1
         ]).
 %% supporting functions
 -export([encode_address/1,
@@ -94,6 +94,22 @@ parse_slot_config(<<IsSecret:1,
       limited_use => bit_to_bool(LimitedUse),
       no_mac => bit_to_bool(NoMac),
       read_key => ReadKey}.
+
+-spec mk_slot_config(map()) -> <<_:16>>.
+mk_slot_config(#{write_config := WriteConfig,
+                 write_key := WriteKey,
+                 is_secret := IsSecret,
+                 encrypt_read := EncryptRead,
+                 limited_use := LimitedUse,
+                 no_mac := NoMac,
+                 read_key := ReadKey}) ->
+    <<(bool_to_bit(IsSecret)):1,
+      (bool_to_bit(EncryptRead)):1,
+      (bool_to_bit(LimitedUse)):1,
+      (bool_to_bit(NoMac)):1,
+      ReadKey:4,
+      WriteConfig:4,
+      WriteKey:4>>.
 
 
 %% @doc Get write cofiguration from the write_config slot bits for a
@@ -230,6 +246,33 @@ parse_key_config(<<ReqAuth:1,
       private => bit_to_bool(Private),
       pub_info => PubInfo
      }.
+
+-spec mk_key_config(map()) -> <<_:16>>.
+mk_key_config(#{x509_index := X509Index,
+                intrusion_disable := IntrusionDisable,
+                auth_key := AuthKey,
+                req_auth := ReqAuth,
+                req_random := ReqRandom,
+                lockable := Lockable,
+                key_type := KeyType,
+                private := Private,
+                pub_info := PubInfo
+               }) ->
+    KeyTypeBits = case KeyType of
+                      ecc_key -> 4;
+                      not_ecc_key -> 7
+                  end,
+    <<(bool_to_bit(ReqAuth)):1,
+      (bool_to_bit(ReqRandom)):1,
+      (bool_to_bit(Lockable)):1,
+      KeyTypeBits:3,
+      PubInfo:1,
+      (bool_to_bit(Private)):1,
+      X509Index:2,
+      0:1,
+      (bool_to_bit(IntrusionDisable)):1,
+      AuthKey:4
+    >>.
 
 genkey(Pid, private, KeyId, Opts=#{from_scratch := _FromScratch,
                                    should_store := _ShouldStore}) ->
