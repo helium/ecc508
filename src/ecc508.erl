@@ -13,7 +13,8 @@
          pause/2,
          read/3,
          write/3,
-         slot_config/2
+         slot_config/2, write_config/2,
+         key_config/2
         ]).
 %% supporting functions
 -export([encode_address/1,
@@ -58,16 +59,7 @@ wake(Pid) ->
     execute(Pid, command(wake)).
 
 
--record(slot_config, {
-                      write_config :: <<_:4>>,
-                      write_key :: <<_:4>>,
-                      is_secret :: boolean(),
-                      encrypt_read :: boolean(),
-                      limited_use :: boolean(),
-                      no_mac :: boolean(),
-                      read_key :: <<_:3>>
-                     }).
-
+-spec slot_config(pid(), 0..15) -> map().
 slot_config(P, Slot) when Slot >= 0, Slot =< 15 ->
     {Block, Offset} = case Slot =< 5 of
                           true ->
@@ -86,22 +78,158 @@ slot_config(P, Slot) when Slot >= 0, Slot =< 15 ->
     end.
 
 
-parse_slot_config(<<WriteConfig:4,
-                    WriteKey:4,
-                    IsSecret:1,
+-spec parse_slot_config(<<_:16>>) -> map().
+parse_slot_config(<<IsSecret:1,
                     EncryptRead:1,
                     LimitedUse:1,
                     NoMac:1,
-                    ReadKey:4>> = V) ->
+                    ReadKey:4,
+                    WriteConfig:4,
+                    WriteKey:4>> = V) ->
     io:format("PARSING ~p, HEX ~p~n", [V, to_hex(V)]),
-    #slot_config{write_config=WriteConfig,
-                 write_key=WriteKey,
-                 is_secret=bit_to_bool(IsSecret),
-                 encrypt_read=bit_to_bool(EncryptRead),
-                 limited_use=bit_to_bool(LimitedUse),
-                 no_mac=bit_to_bool(NoMac),
-                 read_key=ReadKey}.
+    #{write_config => WriteConfig,
+      write_key => WriteKey,
+      is_secret => bit_to_bool(IsSecret),
+      encrypt_read => bit_to_bool(EncryptRead),
+      limited_use => bit_to_bool(LimitedUse),
+      no_mac => bit_to_bool(NoMac),
+      read_key => ReadKey}.
 
+
+%% @doc Get write cofiguration from the write_config slot bits for a
+%% given command. The interpretation of the write_config bits differs
+%% based on the command used.
+%%
+%% For WRITE:
+%%
+%% always - Clear text writes are always permitted on this slot. Slots
+%% set to alwaysshould never be used as key storage. Either 4 or 32
+%% bytes may bewritten to this slot
+%%
+%% pub_invalid - If a validated public key is stored in the slot,
+%% writes are prohibited. UseVerify(Invalidate) to invalidate prior to
+%% writing. Do not use thismode unless the slot contains a public key.
+%%
+%% never - Writes are never permitted on this slot using the Write
+%% command.Slots set to never can still be used as key storage.
+%%
+%% encrypt - Writes to this slot require a properly computed MAC, and the
+%% inputdata must be encrypted by the system with WriteKey using
+%% theencryption algorithm documented in the Write command
+%% description(Section Write Command). 4 byte writes to this slot are
+%% prohibited.
+%%
+%% For DERIVE_KEY:
+%%
+%% {roll, no_mac} - DeriveKey command can be run without authorizing
+%% MAC.(Roll). Source Key: Target
+%%
+%% {roll, mac} - Authorizing MAC required for DeriveKey
+%% command. (Roll). Source Key: Target
+%%
+%% {create, no_mac} - DeriveKey command can be run without authorizing
+%% MAC.(Create). Source Key: Parent
+%%
+%% {create, mac} - Authorizing MAC required for DeriveKey
+%% command. (Create). Source Key: Parent
+%%
+%% invalid - Slots with this write configutation can not be used as
+%% the target of a DeriveKey.
+%%
+%% Note: he source key for the computation performed by the DeriveKey
+%% command can either be thekey directly specified in Param2 (Target)
+%% or the key at SlotConfig<Param2>.WriteKey (Parent).
+%%
+%% For GEN_KEY:
+%%
+%% valid - GenKey may not be used to write random keys into this slot.
+%%
+%% invalid - GenKey may be used to write random keys into this slot.
+%%
+%% For PRIV_WRITE:
+%%
+%% invalid - PrivWrite will return an error if the target key slot has
+%% this value.
+%%
+%% encrypt - Writes to this slot require a properly computed MAC and
+%% the inputdata must be encrypted by the system with
+%% SlotConfig.WriteKey using the encryption algorithm documented with
+%% PrivWrite.
+-type write_config() :: always | pub_invalid | never | encrypt.
+-type derive_key_config() :: {roll, mac | no_mac} | {create, mac, no_mac} | invalid.
+-type gen_key_config() :: valid | invalid.
+-type priv_write_config() :: invalid | encrypt.
+-spec write_config(write | derive_key | gen_key, <<_:4>>)
+                  -> write_config() | derive_key_config() | gen_key_config() | priv_write_config().
+write_config(write, 0) -> always;
+write_config(write, 1) -> pub_invalid;
+write_config(write, V)  when (V bsr 1) == 1 -> never;
+write_config(write, V)  when (V bsr 2) == 2 -> never;
+write_config(write, V)  when (V band 4) == 4 -> encrypt;
+write_config(derive_key, V) ->
+    case V band (bnot 4) of
+        2 -> {roll, no_mac};
+        10 -> {roll, mac};
+        3 -> {create, no_mac};
+        11 -> {create, mac};
+        _ -> invalid
+    end;
+write_config(gen_key, V) ->
+    case V band (bnot 13) of
+        0 -> invalid;
+        2 -> valid
+    end;
+write_config(priv_write, V) ->
+    case V band (bnot 11) of
+        0 -> invalid;
+        1 -> encrypt
+    end.
+
+
+-spec key_config(pid(), 0..15) -> map().
+key_config(P, Slot) when Slot >= 0, Slot =< 15 ->
+    Offset = (Slot * 2) bsr 2,
+    case read(P, 4, {config, 3, Offset}) of
+        {ok, <<S0:16/bitstring, S1:16/bitstring>>} ->
+            case Slot rem 2 of
+                0 -> {ok, parse_key_config(S0)};
+                1 -> {ok, parse_key_config(S1)}
+            end;
+        {error, Error} ->
+            {error, Error}
+    end.
+
+%% Returns a map representing a KeyConfig as documented in Table 2-12
+%% - KeyConfig Bits in the Data sheet.
+%%
+%% Note that the documentation has MSB first but the wire format
+%% returned is LSB first.
+-spec parse_key_config(<<_:16>>) -> map().
+parse_key_config(<<ReqAuth:1,
+                   ReqRandom:1,
+                   Lockable:1,
+                   KeyTypeBits:3,
+                   PubInfo:1,
+                   Private:1,
+                   X509Index:2,
+                   0:1,
+                   IntrusionDisable:1,
+                   AuthKey:4
+                 >>) ->
+    #{x509_index => X509Index,
+      intrusion_disable => bit_to_bool(IntrusionDisable),
+      auth_key => AuthKey,
+      req_auth => bit_to_bool(ReqAuth),
+      req_random => bit_to_bool(ReqRandom),
+      lockable => bit_to_bool(Lockable),
+      key_type => case KeyTypeBits of
+                      4 -> ecc_key;
+                      7 -> not_ecc_key;
+                      _ -> reserved
+                  end,
+      private => bit_to_bool(Private),
+      pub_info => PubInfo
+     }.
 
 genkey(Pid, private, KeyId, Opts=#{from_scratch := _FromScratch,
                                    should_store := _ShouldStore}) ->
