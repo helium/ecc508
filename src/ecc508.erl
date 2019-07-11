@@ -497,13 +497,11 @@ encode_read_write_size(Val) ->  throw({ecc_size_invalid, Val}).
 
 -spec bool_to_bit(true | false) -> 0 | 1.
 bool_to_bit(true) -> 1;
-bool_to_bit(false) -> 0;
-bool_to_bit(Val) ->throw({not_boolean, Val}).
+bool_to_bit(false) -> 0.
 
 -spec bit_to_bool(0 | 1) -> true | false.
 bit_to_bool(1) -> true;
-bit_to_bool(0) -> false;
-bit_to_bool(V) -> throw({not_boolean_bit, V}).
+bit_to_bool(0) -> false.
 
 -spec command(Cmd::atom(), Param1::<<_:8>>, Param2::<<_:16>>, Data::binary()) -> #command{}.
 command(Type, Param1, Param2, Data) ->
