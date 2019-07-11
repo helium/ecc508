@@ -60,7 +60,7 @@ start_link() ->
 wake(Pid) ->
     execute(Pid, command(wake)).
 
--spec slot_config_address(Slot::0..15) -> {config, Block::0..3, Offset::non_neg_integer()}.
+-spec slot_config_address(Slot::0..15) -> {config, Block::0..1, Offset::non_neg_integer()}.
 slot_config_address(Slot) when Slot >= 0, Slot =< 15 ->
     {Block, Offset} = case Slot =< 5 of
                           true ->
