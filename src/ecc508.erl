@@ -203,7 +203,7 @@ write_config(write, V)  when (V bsr 1) == 1 -> never;
 write_config(write, V)  when (V bsr 2) == 2 -> never;
 write_config(write, V)  when (V band 4) == 4 -> encrypt;
 write_config(derive_key, V) ->
-    case V band (bnot 4) of
+    case V band 2#1011 of
         2 -> {roll, no_mac};
         10 -> {roll, mac};
         3 -> {create, no_mac};
@@ -211,12 +211,12 @@ write_config(derive_key, V) ->
         _ -> invalid
     end;
 write_config(gen_key, V) ->
-    case V band (bnot 13) of
+    case V band 2#0010 of
         0 -> invalid;
         2 -> valid
     end;
 write_config(priv_write, V) ->
-    case V band (bnot 11) of
+    case V band 2#0100 of
         0 -> invalid;
         1 -> encrypt
     end.
