@@ -70,7 +70,7 @@ slot_config_address(Slot) when Slot >= 0, Slot =< 15 ->
                       end,
     {config, Block, Offset}.
 
--spec get_slot_config(pid(), 0..15) -> map().
+-spec get_slot_config(pid(), 0..15) -> {ok, map()} | {error, term()}.
 get_slot_config(Pid, Slot) ->
     case read(Pid, 4, slot_config_address(Slot)) of
         {ok, <<S0:16/bitstring, S1:16/bitstring>>} ->
@@ -195,7 +195,7 @@ slot_config_to_bin(#{write_config := WriteConfig,
 -type derive_key_config() :: {roll, mac | no_mac} | {create, mac, no_mac} | invalid.
 -type gen_key_config() :: valid | invalid.
 -type priv_write_config() :: invalid | encrypt.
--spec write_config(write | derive_key | gen_key, <<_:4>>)
+-spec write_config(write | derive_key | gen_key, 0..15)
                   -> write_config() | derive_key_config() | gen_key_config() | priv_write_config().
 write_config(write, 0) -> always;
 write_config(write, 1) -> pub_invalid;
@@ -227,7 +227,7 @@ key_config_address(Slot) when Slot >= 0, Slot =< 15 ->
     Offset = (Slot * 2) bsr 2,
     {config, 3, Offset}.
 
--spec get_key_config(pid(), Slot::0..15) -> map().
+-spec get_key_config(pid(), Slot::0..15) -> {ok, map()} | {error, term()}.
 get_key_config(Pid, Slot) ->
     case read(Pid, 4, key_config_address(Slot)) of
         {ok, <<S0:16/bitstring, S1:16/bitstring>>} ->
@@ -495,10 +495,12 @@ encode_read_write_size(4) -> 0;
 encode_read_write_size(32) -> 1;
 encode_read_write_size(Val) ->  throw({ecc_size_invalid, Val}).
 
+-spec bool_to_bit(true | false) -> 0 | 1.
 bool_to_bit(true) -> 1;
 bool_to_bit(false) -> 0;
 bool_to_bit(Val) ->throw({not_boolean, Val}).
 
+-spec bit_to_bool(0 | 1) -> true | false.
 bit_to_bool(1) -> true;
 bit_to_bool(0) -> false;
 bit_to_bool(V) -> throw({not_boolean_bit, V}).
