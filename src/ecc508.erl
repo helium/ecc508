@@ -5,6 +5,7 @@
 %% API exports
 -export([start_link/0,
          wake/1,
+         serial_num/1,
          genkey/4,
          nonce/3,
          digest_init/2, digest_update/3, digest_finalize/3,
@@ -59,6 +60,14 @@ start_link() ->
 
 wake(Pid) ->
     execute(Pid, command(wake)).
+
+serial_num(Pid) ->
+    case read(Pid, 32, {config, 0, 0}) of
+        {ok, <<B1:4/binary, _:4/binary, B2:5/binary, _/binary>>} ->
+            {ok, <<B1/binary, B2/binary>>};
+        {error, Error} ->
+            {error, Error}
+    end.
 
 -spec slot_config_address(Slot::0..15) -> {config, Block::0..1, Offset::non_neg_integer()}.
 slot_config_address(Slot) when Slot >= 0, Slot =< 15 ->
