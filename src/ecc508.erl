@@ -13,8 +13,10 @@
          pause/2,
          read/3,
          write/3,
-         slot_config/2, mk_slot_config/1, write_config/2,
-         key_config/2, mk_key_config/1
+         slot_config_address/1, get_slot_config/2, set_slot_config/3,
+         slot_config_to_bin/1, slot_config_from_bin/1, write_config/2,
+         key_config_address/1, get_key_config/2, set_key_config/3,
+         key_config_to_bin/1, key_config_from_bin/1
         ]).
 %% supporting functions
 -export([encode_address/1,
@@ -58,34 +60,52 @@ start_link() ->
 wake(Pid) ->
     execute(Pid, command(wake)).
 
-
--spec slot_config(pid(), 0..15) -> map().
-slot_config(P, Slot) when Slot >= 0, Slot =< 15 ->
+-spec slot_config_address(Slot::0..15) -> {config, Block::0..3, Offset::non_neg_integer()}.
+slot_config_address(Slot) when Slot >= 0, Slot =< 15 ->
     {Block, Offset} = case Slot =< 5 of
                           true ->
                               {0, (20 + Slot * 2) bsr 2};
                           false ->
                               {1, ((Slot - 5) * 2) bsr 2}
                       end,
-    case read(P, 4, {config, Block, Offset}) of
+    {config, Block, Offset}.
+
+-spec get_slot_config(pid(), 0..15) -> map().
+get_slot_config(Pid, Slot) ->
+    case read(Pid, 4, slot_config_address(Slot)) of
         {ok, <<S0:16/bitstring, S1:16/bitstring>>} ->
             case Slot rem 2 of
-                0 -> {ok, parse_slot_config(S0)};
-                1 -> {ok, parse_slot_config(S1)}
+                0 -> {ok, slot_config_from_bin(S0)};
+                1 -> {ok, slot_config_from_bin(S1)}
             end;
         {error, Error} ->
             {error, Error}
     end.
 
+-spec set_slot_config(pid(), 0..15, map()) -> ok | {error, term()}.
+set_slot_config(Pid, Slot, Config) ->
+    ConfigBin = slot_config_to_bin(Config),
+    SlotAddress= slot_config_address(Slot),
+    case read(Pid, 4, SlotAddress) of
+        {ok, <<S0:16/bitstring, S1:16/bitstring>>} ->
+            NewBytes = case Slot rem 2 of
+                           0 -> <<ConfigBin:16/bitstring, S1:16/bitstring>>;
+                           1 -> <<S0:16/bitstring, ConfigBin:16/bitstring>>
+                       end,
+            write(Pid, SlotAddress, NewBytes);
+        {error, Error} ->
+            {error, Error}
+    end.
 
--spec parse_slot_config(<<_:16>>) -> map().
-parse_slot_config(<<IsSecret:1,
-                    EncryptRead:1,
-                    LimitedUse:1,
-                    NoMac:1,
-                    ReadKey:4,
-                    WriteConfig:4,
-                    WriteKey:4>> = V) ->
+
+-spec slot_config_from_bin(<<_:16>>) -> map().
+slot_config_from_bin(<<IsSecret:1,
+                       EncryptRead:1,
+                       LimitedUse:1,
+                       NoMac:1,
+                       ReadKey:4,
+                       WriteConfig:4,
+                       WriteKey:4>> = V) ->
     io:format("PARSING ~p, HEX ~p~n", [V, to_hex(V)]),
     #{write_config => WriteConfig,
       write_key => WriteKey,
@@ -95,14 +115,14 @@ parse_slot_config(<<IsSecret:1,
       no_mac => bit_to_bool(NoMac),
       read_key => ReadKey}.
 
--spec mk_slot_config(map()) -> <<_:16>>.
-mk_slot_config(#{write_config := WriteConfig,
-                 write_key := WriteKey,
-                 is_secret := IsSecret,
-                 encrypt_read := EncryptRead,
-                 limited_use := LimitedUse,
-                 no_mac := NoMac,
-                 read_key := ReadKey}) ->
+-spec slot_config_to_bin(map()) -> <<_:16>>.
+slot_config_to_bin(#{write_config := WriteConfig,
+                     write_key := WriteKey,
+                     is_secret := IsSecret,
+                     encrypt_read := EncryptRead,
+                     limited_use := LimitedUse,
+                     no_mac := NoMac,
+                     read_key := ReadKey}) ->
     <<(bool_to_bit(IsSecret)):1,
       (bool_to_bit(EncryptRead)):1,
       (bool_to_bit(LimitedUse)):1,
@@ -202,36 +222,55 @@ write_config(priv_write, V) ->
     end.
 
 
--spec key_config(pid(), 0..15) -> map().
-key_config(P, Slot) when Slot >= 0, Slot =< 15 ->
+-spec key_config_address(Slot::0..15) -> {config, 3, non_neg_integer()}.
+key_config_address(Slot) when Slot >= 0, Slot =< 15 ->
     Offset = (Slot * 2) bsr 2,
-    case read(P, 4, {config, 3, Offset}) of
+    {config, 3, Offset}.
+
+-spec get_key_config(pid(), Slot::0..15) -> map().
+get_key_config(Pid, Slot) ->
+    case read(Pid, 4, key_config_address(Slot)) of
         {ok, <<S0:16/bitstring, S1:16/bitstring>>} ->
             case Slot rem 2 of
-                0 -> {ok, parse_key_config(S0)};
-                1 -> {ok, parse_key_config(S1)}
+                0 -> {ok, key_config_from_bin(S0)};
+                1 -> {ok, key_config_from_bin(S1)}
             end;
         {error, Error} ->
             {error, Error}
     end.
 
-%% Returns a map representing a KeyConfig as documented in Table 2-12
+-spec set_key_config(pid(), Slot::0..15, Config::map()) -> ok | {error, term()}.
+set_key_config(Pid, Slot, Config) ->
+    ConfigBin = key_config_to_bin(Config),
+    Address = key_config_address(Slot),
+    case read(Pid, 4, Address) of
+        {ok, <<S0:16/bitstring, S1:16/bitstring>>} ->
+            NewBytes = case Slot rem 2 of
+                           0 -> <<ConfigBin:16/bitstring, S1:16/bitstring>>;
+                           1 -> <<S0:16/bitstring, ConfigBin:16/bitstring>>
+                       end,
+            write(Pid, Address, NewBytes);
+        {error, Error} ->
+            {error, Error}
+    end.
+
+%% @doc Returns a map representing a KeyConfig as documented in Table 2-12
 %% - KeyConfig Bits in the Data sheet.
 %%
 %% Note that the documentation has MSB first but the wire format
 %% returned is LSB first.
--spec parse_key_config(<<_:16>>) -> map().
-parse_key_config(<<ReqAuth:1,
-                   ReqRandom:1,
-                   Lockable:1,
-                   KeyTypeBits:3,
-                   PubInfo:1,
-                   Private:1,
-                   X509Index:2,
-                   0:1,
-                   IntrusionDisable:1,
-                   AuthKey:4
-                 >>) ->
+-spec key_config_from_bin(KeyConfig::<<_:16>>) -> map().
+key_config_from_bin(<<ReqAuth:1,
+                      ReqRandom:1,
+                      Lockable:1,
+                      KeyTypeBits:3,
+                      PubInfo:1,
+                      Private:1,
+                      X509Index:2,
+                      0:1,
+                      IntrusionDisable:1,
+                      AuthKey:4
+                    >>) ->
     #{x509_index => X509Index,
       intrusion_disable => bit_to_bool(IntrusionDisable),
       auth_key => AuthKey,
@@ -247,17 +286,17 @@ parse_key_config(<<ReqAuth:1,
       pub_info => PubInfo
      }.
 
--spec mk_key_config(map()) -> <<_:16>>.
-mk_key_config(#{x509_index := X509Index,
-                intrusion_disable := IntrusionDisable,
-                auth_key := AuthKey,
-                req_auth := ReqAuth,
-                req_random := ReqRandom,
-                lockable := Lockable,
-                key_type := KeyType,
-                private := Private,
-                pub_info := PubInfo
-               }) ->
+-spec key_config_to_bin(map()) -> <<_:16>>.
+key_config_to_bin(#{x509_index := X509Index,
+                    intrusion_disable := IntrusionDisable,
+                    auth_key := AuthKey,
+                    req_auth := ReqAuth,
+                    req_random := ReqRandom,
+                    lockable := Lockable,
+                    key_type := KeyType,
+                    private := Private,
+                    pub_info := PubInfo
+                   }) ->
     KeyTypeBits = case KeyType of
                       ecc_key -> 4;
                       not_ecc_key -> 7
@@ -473,12 +512,12 @@ command(wake) ->
     command(wake, <<0:8>>, <<0:16>>, <<0:184>>);
 command({genkey, private, KeyId, #{should_store := ShouldStore, from_scratch := FromScratch}}) ->
     Param1 = <<0:3, 1:1, (bool_to_bit(ShouldStore)):1, (bool_to_bit(FromScratch)):1, 0:2>>,
-    command(genkey, Param1, <<KeyId:16/unsigned>>, <<>>);
+    command(genkey, Param1, <<KeyId:16/unsigned-little-integer>>, <<>>);
 command({genkey, public, KeyId, #{key_id := OriginalKeyId,
                                   should_store := ShouldStore,
                                   from_scratch := FromScratch}}) ->
     Data = <<0:4, (bool_to_bit(ShouldStore)):1, (bool_to_bit(FromScratch)):1, 0:2, OriginalKeyId:16>>,
-    command(genkey, <<16#10:8>>, <<KeyId:16/unsigned>>, Data);
+    command(genkey, <<16#10:8>>, <<KeyId:16/unsigned-little-integer>>, Data);
 command({nonce, passthrough, Data}) ->
     command(nonce, <<16#03>>, <<0:16>>, <<Data:4/binary>>);
 command({nonce, preseed, Data}) ->
@@ -496,17 +535,17 @@ command({random, SeedMode}) ->
 command({digest, {init, sha}}) ->
     command(sha, <<0:8>>, <<0:16>>, <<>>);
 command({digest, {init, {hmac, Slot}}}) ->
-    command(sha, <<16#04>>, <<Slot:16/integer-unsigned-big>>, <<>>);
+    command(sha, <<16#04>>, <<Slot:16/integer-unsigned-little>>, <<>>);
 command({digest, {update, Data}}) when byte_size(Data) =< 64->
-    command(sha, <<16#01>>, <<(byte_size(Data)):16/integer-unsigned-big>>, Data);
+    command(sha, <<16#01>>, <<(byte_size(Data)):16/integer-unsigned-little>>, Data);
 command({digest, {public, Slot}}) ->
-    command(sha, <<16#03>>, <<Slot:16/integer-unsigned-big>>, <<>>);
+    command(sha, <<16#03>>, <<Slot:16/integer-unsigned-little>>, <<>>);
 command({digest, {finalize, {sha, Data}}}) ->
-    command(sha, <<16#02>>, <<(byte_size(Data)):16/integer-unsigned-big>>, Data);
+    command(sha, <<16#02>>, <<(byte_size(Data)):16/integer-unsigned-little>>, Data);
 command({digest, {finalize, {hmac, Data}}}) ->
-    command(sha, <<16#05>>, <<(byte_size(Data)):16/integer-unsigned-big>>, Data);
+    command(sha, <<16#05>>, <<(byte_size(Data)):16/integer-unsigned-little>>, Data);
 command({sign, {external, KeyId}}) ->
-    command(sign, <<16#80>>, <<KeyId:16/integer-unsigned-big>>, <<>>);
+    command(sign, <<16#80>>, <<KeyId:16/integer-unsigned-little>>, <<>>);
 command({verify, {external, Signature, _ECPubKey={#'ECPoint'{point=PubPoint}, _}}}) ->
     << _:8, X:32/binary, Y:32/binary>> = PubPoint,
     SignatureLen = byte_size(Signature),
