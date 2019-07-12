@@ -52,7 +52,7 @@
 
 
 start_link() ->
-    i2c:start_link("i2c-1", 16#60, 155).
+    i2c:start_link("i2c-1", 16#60, ?CMDGRP_COUNT_MAX).
 
 %%====================================================================
 %% API functions
@@ -61,6 +61,10 @@ start_link() ->
 wake(Pid) ->
     execute(Pid, command(wake)).
 
+%% @doc Returns the 9 bytes that represent the serial number of the
+%% ECC. Per section 2.2.6 of the Data Sheet the first two, and last
+%% byte of the returned binary will always be `<<16#01, 16#23,
+%% 16#EE>>'
 serial_num(Pid) ->
     case read(Pid, 32, {config, 0, 0}) of
         {ok, <<B1:4/binary, _:4/binary, B2:5/binary, _/binary>>} ->
@@ -69,6 +73,8 @@ serial_num(Pid) ->
             {error, Error}
     end.
 
+%% @doc Get a block and offset address for the configuration of a
+%% slot.
 -spec slot_config_address(Slot::0..15) -> {config, Block::0..1, Offset::non_neg_integer()}.
 slot_config_address(Slot) when Slot >= 0, Slot =< 15 ->
     {Block, Offset} = case Slot =< 5 of
@@ -79,6 +85,8 @@ slot_config_address(Slot) when Slot >= 0, Slot =< 15 ->
                       end,
     {config, Block, Offset}.
 
+%% @doc Gets the configuraiton for a slot as defined in the
+%% configuration zone.
 -spec get_slot_config(pid(), 0..15) -> {ok, map()} | {error, term()}.
 get_slot_config(Pid, Slot) ->
     case read(Pid, 4, slot_config_address(Slot)) of
@@ -91,6 +99,8 @@ get_slot_config(Pid, Slot) ->
             {error, Error}
     end.
 
+%% @doc Sets the configuraiton for a given slot. The configuration is
+%% given as a map.
 -spec set_slot_config(pid(), 0..15, map()) -> ok | {error, term()}.
 set_slot_config(Pid, Slot, Config) ->
     ConfigBin = slot_config_to_bin(Config),
@@ -107,6 +117,7 @@ set_slot_config(Pid, Slot, Config) ->
     end.
 
 
+%% @doc Converts a given 16 bit binary to a slot configuration map.
 -spec slot_config_from_bin(<<_:16>>) -> map().
 slot_config_from_bin(<<IsSecret:1,
                        EncryptRead:1,
@@ -114,8 +125,7 @@ slot_config_from_bin(<<IsSecret:1,
                        NoMac:1,
                        ReadKey:4,
                        WriteConfig:4,
-                       WriteKey:4>> = V) ->
-    io:format("PARSING ~p, HEX ~p~n", [V, to_hex(V)]),
+                       WriteKey:4>>) ->
     #{write_config => WriteConfig,
       write_key => WriteKey,
       is_secret => bit_to_bool(IsSecret),
@@ -124,6 +134,8 @@ slot_config_from_bin(<<IsSecret:1,
       no_mac => bit_to_bool(NoMac),
       read_key => ReadKey}.
 
+ %% @doc Converts a given slot configuration map to a binary. The
+ %% resulting binary can be used in a `set_slot_config' call.
 -spec slot_config_to_bin(map()) -> <<_:16>>.
 slot_config_to_bin(#{write_config := WriteConfig,
                      write_key := WriteKey,
@@ -426,7 +438,7 @@ sign(Pid, external, KeyId) ->
     execute(Pid, command({sign, {external, KeyId}})).
 
 
--spec verify(I2C::pid(), external, Signature::binary(), PubKey::public_key:ec_public_key())
+-spec verify(I2C::pid(), external, Signature::binary(), PubKey::public_key:public_key())
             -> ok | {error, term()}.
 verify(Pid, external, Signature, ECPubKey) ->
     execute(Pid, command({verify, {external, Signature, ECPubKey}})).

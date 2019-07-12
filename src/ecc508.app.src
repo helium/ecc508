@@ -5,6 +5,7 @@
   {applications,
    [kernel,
     stdlib,
+    public_key,
     erlang_ale
    ]},
   {env,[]},
