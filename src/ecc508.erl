@@ -7,7 +7,7 @@
          wake/1,
          serial_num/1,
          lock/2, lock/3,
-         genkey/4,
+         genkey/3,
          nonce/3,
          digest_init/2, digest_update/3, digest_finalize/3,
          random/1, random/2,
@@ -389,27 +389,24 @@ lock(Pid, Zone, CRC) ->
     execute(Pid, command({lock, Zone, CRC})).
 
 
-genkey(Pid, private, KeyId, Opts=#{from_scratch := _FromScratch,
-                                   should_store := _ShouldStore}) ->
-    RetryCount = maps:get(retry_count, Opts, 0),
+genkey(Pid, Type, KeyId) ->
+    genkey(Pid, Type, KeyId, 0).
+
+genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private ->
     case RetryCount of
         3 ->
             {error, ecc_genkey_failed};
         _ ->
-            case execute(Pid, command({genkey, private, KeyId, Opts})) of
+            case execute(Pid, command({genkey, Type, KeyId})) of
                 {error, ecc_response_ecc_fault} ->
-                    genkey(Pid, private, KeyId, Opts#{retry_count => RetryCount + 1});
+                    genkey(Pid, private, KeyId, RetryCount);
                 {error, Error} ->
                     {error, Error};
                 {ok, Data} ->
-                    {ok, Data}
+                    PubPoint = <<4:8, Data/binary>>,
+                    {ok, {#'ECPoint'{point=PubPoint}, {namedCurve, ?secp256r1}}}
             end
-    end;
-genkey(Pid, public, KeyId, Opts=#{from_scratch := _FromScratch,
-                                  should_store := _ShouldStore,
-                                  key_id := _OriginalKeyID}) ->
-    execute(Pid, command({genkey, public, KeyId, Opts})).
-
+    end.
 
 
 nonce(Pid, passtrough, Data) ->
@@ -586,14 +583,10 @@ command(Type, Param1, Param2, Data) ->
 
 command(wake) ->
     command(wake, <<0:8>>, <<0:16>>, <<0:184>>);
-command({genkey, private, KeyId, #{should_store := ShouldStore, from_scratch := FromScratch}}) ->
-    Param1 = <<0:3, 1:1, (bool_to_bit(ShouldStore)):1, (bool_to_bit(FromScratch)):1, 0:2>>,
-    command(genkey, Param1, <<KeyId:16/unsigned-little-integer>>, <<>>);
-command({genkey, public, KeyId, #{key_id := OriginalKeyId,
-                                  should_store := ShouldStore,
-                                  from_scratch := FromScratch}}) ->
-    Data = <<0:4, (bool_to_bit(ShouldStore)):1, (bool_to_bit(FromScratch)):1, 0:2, OriginalKeyId:16>>,
-    command(genkey, <<16#10:8>>, <<KeyId:16/unsigned-little-integer>>, Data);
+command({genkey, private, KeyId}) ->
+    command(genkey, <<16#04:8>>, <<KeyId:16/unsigned-little-integer>>, <<>>);
+command({genkey, public, KeyId}) ->
+    command(genkey, <<16#00:8>>, <<KeyId:16/unsigned-little-integer>>, <<>>);
 command({nonce, passthrough, Data}) ->
     command(nonce, <<16#03>>, <<0:16>>, <<Data:4/binary>>);
 command({nonce, preseed, Data}) ->
