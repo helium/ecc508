@@ -6,23 +6,25 @@
 -export([start_link/0,
          wake/1,
          serial_num/1,
+         lock/2, lock/3,
          genkey/4,
          nonce/3,
          digest_init/2, digest_update/3, digest_finalize/3,
          random/1, random/2,
          sign/3, verify/4,
          pause/2,
-         read/3,
-         write/3,
          slot_config_address/1, get_slot_config/2, set_slot_config/3,
          slot_config_to_bin/1, slot_config_from_bin/1, write_config/2,
+         get_locked/2, get_slot_locked/2,
          key_config_address/1, get_key_config/2, set_key_config/3,
          key_config_to_bin/1, key_config_from_bin/1
         ]).
+%% ecc key functions
+-export([ecc_key_config/0, ecc_slot_config/0]).
 %% supporting functions
 -export([encode_address/1,
-         execute/2,
-         command_spec/1, command/4,
+         read/3, write/3,
+         execute/2, command_spec/1, command/1, command/4, command_to_binary/1, package/1,
          to_hex/1
         ]).
 
@@ -101,15 +103,16 @@ get_slot_config(Pid, Slot) ->
 
 %% @doc Sets the configuraiton for a given slot. The configuration is
 %% given as a map.
--spec set_slot_config(pid(), 0..15, map()) -> ok | {error, term()}.
-set_slot_config(Pid, Slot, Config) ->
-    ConfigBin = slot_config_to_bin(Config),
+-spec set_slot_config(pid(), 0..15, Config::map() | binary()) -> ok | {error, term()}.
+set_slot_config(Pid, Slot, Config) when is_map(Config) ->
+    set_slot_config(Pid, Slot, slot_config_to_bin(Config));
+set_slot_config(Pid, Slot, Config) when is_binary(Config) ->
     SlotAddress= slot_config_address(Slot),
     case read(Pid, 4, SlotAddress) of
         {ok, <<S0:16/bitstring, S1:16/bitstring>>} ->
             NewBytes = case Slot rem 2 of
-                           0 -> <<ConfigBin:16/bitstring, S1:16/bitstring>>;
-                           1 -> <<S0:16/bitstring, ConfigBin:16/bitstring>>
+                           0 -> <<Config:16/bitstring, S1:16/bitstring>>;
+                           1 -> <<S0:16/bitstring, Config:16/bitstring>>
                        end,
             write(Pid, SlotAddress, NewBytes);
         {error, Error} ->
@@ -152,6 +155,15 @@ slot_config_to_bin(#{write_config := WriteConfig,
       WriteConfig:4,
       WriteKey:4>>.
 
+ecc_slot_config() ->
+    #{ write_config => 2,
+       write_key => 0,
+       is_secret => true,
+       encrypt_read => false,
+       limited_use => false,
+       no_mac => true,
+       read_key => 2#0011
+     }.
 
 %% @doc Get write cofiguration from the write_config slot bits for a
 %% given command. The interpretation of the write_config bits differs
@@ -197,7 +209,7 @@ slot_config_to_bin(#{write_config := WriteConfig,
 %% command can either be thekey directly specified in Param2 (Target)
 %% or the key at SlotConfig<Param2>.WriteKey (Parent).
 %%
-%% For GEN_KEY:
+%% For GENKEY:
 %%
 %% valid - GenKey may not be used to write random keys into this slot.
 %%
@@ -214,10 +226,10 @@ slot_config_to_bin(#{write_config := WriteConfig,
 %% PrivWrite.
 -type write_config() :: always | pub_invalid | never | encrypt.
 -type derive_key_config() :: {roll, mac | no_mac} | {create, mac, no_mac} | invalid.
--type gen_key_config() :: valid | invalid.
+-type genkey_config() :: valid | invalid.
 -type priv_write_config() :: invalid | encrypt.
--spec write_config(write | derive_key | gen_key, 0..15)
-                  -> write_config() | derive_key_config() | gen_key_config() | priv_write_config().
+-spec write_config(write | derive_key | genkey, 0..15)
+                  -> write_config() | derive_key_config() | genkey_config() | priv_write_config().
 write_config(write, 0) -> always;
 write_config(write, 1) -> pub_invalid;
 write_config(write, V)  when (V bsr 1) == 1 -> never;
@@ -231,7 +243,7 @@ write_config(derive_key, V) ->
         11 -> {create, mac};
         _ -> invalid
     end;
-write_config(gen_key, V) ->
+write_config(genkey, V) ->
     case V band 2#0010 of
         0 -> invalid;
         2 -> valid
@@ -242,6 +254,27 @@ write_config(priv_write, V) ->
         1 -> encrypt
     end.
 
+
+-spec get_locked(pid(), config | data) -> boolean().
+get_locked(Pid, Zone) ->
+    case read(Pid, 4, {config, 2, 5}) of
+        {ok, <<_:16, LockData:8, LockConfig:8>>} ->
+            case Zone of
+                config -> {ok, LockConfig == 0};
+                data -> {ok, LockData == 0}
+            end;
+        {error, Error} -> {error, Error}
+    end.
+
+
+-spec get_slot_locked(pid(), Slot::0..15) -> boolean().
+get_slot_locked(Pid, Slot) ->
+    case read(Pid, 4, {config, 2, 6}) of
+        {ok, <<LockBits:16/unsigned-integer-little, _/binary>>} ->
+            LockBits band (1 bsl Slot) == 0;
+        {error, Error} ->
+            {error, Error}
+    end.
 
 -spec key_config_address(Slot::0..15) -> {config, 3, non_neg_integer()}.
 key_config_address(Slot) when Slot >= 0, Slot =< 15 ->
@@ -260,15 +293,16 @@ get_key_config(Pid, Slot) ->
             {error, Error}
     end.
 
--spec set_key_config(pid(), Slot::0..15, Config::map()) -> ok | {error, term()}.
-set_key_config(Pid, Slot, Config) ->
-    ConfigBin = key_config_to_bin(Config),
+-spec set_key_config(pid(), Slot::0..15, Config::map() | binary()) -> ok | {error, term()}.
+set_key_config(Pid, Slot, Config) when is_map(Config)->
+    set_key_config(Pid, Slot, key_config_to_bin(Config));
+set_key_config(Pid, Slot, Config) when is_binary(Config)->
     Address = key_config_address(Slot),
     case read(Pid, 4, Address) of
         {ok, <<S0:16/bitstring, S1:16/bitstring>>} ->
             NewBytes = case Slot rem 2 of
-                           0 -> <<ConfigBin:16/bitstring, S1:16/bitstring>>;
-                           1 -> <<S0:16/bitstring, ConfigBin:16/bitstring>>
+                           0 -> <<Config:16/bitstring, S1:16/bitstring>>;
+                           1 -> <<S0:16/bitstring, Config:16/bitstring>>
                        end,
             write(Pid, Address, NewBytes);
         {error, Error} ->
@@ -304,7 +338,7 @@ key_config_from_bin(<<ReqAuth:1,
                       _ -> reserved
                   end,
       private => bit_to_bool(Private),
-      pub_info => PubInfo
+      pub_info => bit_to_bool(PubInfo)
      }.
 
 -spec key_config_to_bin(map()) -> <<_:16>>.
@@ -326,13 +360,34 @@ key_config_to_bin(#{x509_index := X509Index,
       (bool_to_bit(ReqRandom)):1,
       (bool_to_bit(Lockable)):1,
       KeyTypeBits:3,
-      PubInfo:1,
+      (bool_to_bit(PubInfo)):1,
       (bool_to_bit(Private)):1,
       X509Index:2,
       0:1,
       (bool_to_bit(IntrusionDisable)):1,
       AuthKey:4
     >>.
+
+ecc_key_config() ->
+    #{ auth_key => 0,
+       req_auth => false,
+       x509_index => 0,
+       key_type => ecc_key,
+       intrusion_disable => false,
+       req_random => false,
+       lockable => true,
+       private => true,
+       pub_info => true}.
+
+
+-spec lock(pid(), config | data | {slot, 0..15}) -> ok | {error, term()}.
+lock(Pid, Zone) ->
+    lock(Pid, Zone, <<16#00, 16#00>>).
+
+-spec lock(pid(), config | data | {slot, 0..15}, CRC::<<_:16>>) -> ok | {error, term()}.
+lock(Pid, Zone, CRC) ->
+    execute(Pid, command({lock, Zone, CRC})).
+
 
 genkey(Pid, private, KeyId, Opts=#{from_scratch := _FromScratch,
                                    should_store := _ShouldStore}) ->
@@ -578,7 +633,21 @@ command({read, Size, Address}) ->
     command(read, Param1, encode_address(Address), <<>>);
 command({write, Address, Data}) ->
     Param1 = <<(encode_read_write_size(byte_size(Data))):1, 0:5, (encode_address_zone(Address)):2>>,
-    command(write, Param1, encode_address(Address), Data).
+    command(write, Param1, encode_address(Address), Data);
+command({lock, Zone, CRC}) ->
+    {ZoneBits, SlotBits} = case Zone of
+                   config -> {2#00, 0};
+                   data -> {2#01, 0};
+                   {slot, Slot} -> {2#10, Slot};
+                   V -> throw({invalid_lock_zone, V})
+               end,
+    CRCBit = case CRC of
+                 <<16#00, 16#00>> -> 1;
+                 _ -> 0
+             end,
+    Param1 = <<CRCBit:1, 0:1, SlotBits:4, ZoneBits:2>>,
+    command(lock, Param1, crc16:rev(CRC), <<>>).
+
 
 
 to_hex(Bin) ->
