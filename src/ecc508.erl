@@ -409,7 +409,7 @@ genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private 
     end.
 
 
-nonce(Pid, passtrough, Data) ->
+nonce(Pid, passthrough, Data) ->
     execute(Pid, command({nonce, passthrough, Data}));
 nonce(Pid, preseed, Data) ->
     execute(Pid, command({nonce, preseed, Data}));
@@ -478,22 +478,44 @@ digest_finalize(Pid, State, FinalData) when byte_size(FinalData) =< 63 ->
 
 
 
-%% @doc
-%% sign/external is the only signing implementation thus far
-%% as the more complicated internal form necessitates reading
-%% and communication with the configuration zone.
-%%
-%% los sciento :(
-%% end
--spec sign(I2C::pid(), external, KeyId::non_neg_integer()) -> {ok, binary()} | {error, term()}.
-sign(Pid, external, KeyId) ->
-    execute(Pid, command({sign, {external, KeyId}})).
+%% @doc Signs a given binary with the private key in the given key
+%% slot.
+-spec sign(I2C::pid(), KeyId::non_neg_integer(), Data::binary() | {digest, binary()})
+          -> {ok, binary()} | {error, term()}.
+sign(Pid, KeyId, {digest, Digest}) ->
+    case nonce(Pid, passthrough, Digest) of
+        {error, Error} ->
+            {error, Error};
+        ok ->
+            case execute(Pid, command({sign, {external, KeyId}})) of
+                {error, Error} ->
+                    {error, Error};
+                {ok, <<R:256/signed-integer-big, S:256/signed-integer-big>>} ->
+                    {ok, public_key:der_encode('ECDSA-Sig-Value', #'ECDSA-Sig-Value'{r=R, s=S})}
+            end
+    end;
+sign(Pid, KeyId, Data) ->
+    sign(Pid, KeyId, {digest, crypto:hash(sha256, Data)}).
 
 
--spec verify(I2C::pid(), external, Signature::binary(), PubKey::public_key:public_key())
-            -> ok | {error, term()}.
-verify(Pid, external, Signature, ECPubKey) ->
-    execute(Pid, command({verify, {external, Signature, ECPubKey}})).
+-spec verify(I2C::pid(), Data::binary() | {digest, binary()},
+             Signature::binary(), PubKey::public_key:public_key()) -> ok | {error, term()}.
+verify(Pid, {digest, Digest}, Signature, _ECPubKey={#'ECPoint'{point=PubPoint}, _}) ->
+    << _:8, X:32/binary, Y:32/binary>> = PubPoint,
+    #'ECDSA-Sig-Value'{r=R, s=S} = public_key:der_decode('ECDSA-Sig-Value', Signature),
+    case nonce(Pid, passthrough, Digest) of
+        {error, Error} ->
+            {error, Error};
+        ok ->
+            execute(Pid, command({verify, {external,
+                                           <<R:256/signed-integer-big>>,
+                                           <<S:256/signed-integer-big>>,
+                                           X,
+                                           Y}}))
+    end;
+verify(Pid, Data, Signature, ECPubKey) ->
+    verify(Pid, {digest, crypto:hash(sha256, Data)}, Signature, ECPubKey).
+
 
 -spec read(I2C::pid(), Size::4 | 32, Address::address()) -> {ok, binary()} | {error, term()}.
 read(Pid, Size, Address) ->
@@ -615,12 +637,9 @@ command({digest, {finalize, {hmac, Data}}}) ->
     command(sha, <<16#05>>, <<(byte_size(Data)):16/integer-unsigned-little>>, Data);
 command({sign, {external, KeyId}}) ->
     command(sign, <<16#80>>, <<KeyId:16/integer-unsigned-little>>, <<>>);
-command({verify, {external, Signature, _ECPubKey={#'ECPoint'{point=PubPoint}, _}}}) ->
-    << _:8, X:32/binary, Y:32/binary>> = PubPoint,
-    SignatureLen = byte_size(Signature),
-    {R, S} = split_binary(Signature, SignatureLen div 2),
+command({verify, {external, R, S, X, Y}}) ->
     Data = <<R/binary, S/binary, X/binary, Y/binary>>,
-    command(verify, <<16#02>>, <<16#03, 16#00>>, Data);
+    command(verify, <<16#02>>, <<16#04, 16#00>>, Data);
 command({read, Size, Address}) ->
     Param1 = <<(encode_read_write_size(Size)):1, 0:5, (encode_address_zone(Address)):2>>,
     command(read, Param1, encode_address(Address), <<>>);
@@ -651,7 +670,7 @@ to_hex(Bin) ->
 wait_for_response(Pid, {Extra, StartTime}, Cmd=#command{spec=Spec}) ->
     case Extra of
         false -> timer:sleep(Spec#command_spec.timing_typ);
-        true -> timer:sleep(Spec#command_spec.timing_max - (get_timestamp() - StartTime))
+        true -> timer:sleep(max(0, Spec#command_spec.timing_max - (get_timestamp() - StartTime)))
     end,
     case i2c:read(Pid, 1) of
         {error, i2c_read_failed} ->
