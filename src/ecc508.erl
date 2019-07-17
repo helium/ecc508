@@ -8,7 +8,7 @@
          serial_num/1,
          lock/2, lock/3,
          genkey/3,
-         nonce/3,
+         nonce/4,
          digest_init/2, digest_update/3, digest_finalize/3,
          random/1, random/2,
          sign/3, verify/4,
@@ -409,14 +409,14 @@ genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private 
     end.
 
 
-nonce(Pid, passthrough, Data) ->
-    execute(Pid, command({nonce, passthrough, Data}));
-nonce(Pid, preseed, Data) ->
-    execute(Pid, command({nonce, preseed, Data}));
-nonce(Pid, random, Data) ->
-    nonce(Pid, {random, false}, Data);
-nonce(Pid, {random, UpdateSeed}, Data) when is_boolean(UpdateSeed) ->
-    execute(Pid, command({nonce, {random, UpdateSeed}, Data})).
+nonce(Pid, passthrough, Target, Data) ->
+    execute(Pid, command({nonce, passthrough, Target, Data}));
+nonce(Pid, preseed, Target, Data) ->
+    execute(Pid, command({nonce, preseed, Target, Data}));
+nonce(Pid, random, Target, Data) ->
+    nonce(Pid, {random, false}, Target, Data);
+nonce(Pid, {random, UpdateSeed}, Target, Data) when is_boolean(UpdateSeed) ->
+    execute(Pid, command({nonce, {random, UpdateSeed}, Target, Data})).
 
 
 -spec pause(I2C::pid(), Selector::non_neg_integer()) -> ok | {error, term()}.
@@ -483,11 +483,11 @@ digest_finalize(Pid, State, FinalData) when byte_size(FinalData) =< 63 ->
 -spec sign(I2C::pid(), KeyId::non_neg_integer(), Data::binary() | {digest, binary()})
           -> {ok, binary()} | {error, term()}.
 sign(Pid, KeyId, {digest, Digest}) ->
-    case nonce(Pid, passthrough, Digest) of
+    case nonce(Pid, passthrough, msg_digest, Digest) of
         {error, Error} ->
             {error, Error};
         ok ->
-            case execute(Pid, command({sign, {external, KeyId}})) of
+            case execute(Pid, command({sign, {external, msg_digest, KeyId}})) of
                 {error, Error} ->
                     {error, Error};
                 {ok, <<R:256/signed-integer-big, S:256/signed-integer-big>>} ->
@@ -503,11 +503,12 @@ sign(Pid, KeyId, Data) ->
 verify(Pid, {digest, Digest}, Signature, _ECPubKey={#'ECPoint'{point=PubPoint}, _}) ->
     << _:8, X:32/binary, Y:32/binary>> = PubPoint,
     #'ECDSA-Sig-Value'{r=R, s=S} = public_key:der_decode('ECDSA-Sig-Value', Signature),
-    case nonce(Pid, passthrough, Digest) of
+    case nonce(Pid, passthrough, msg_digest, Digest) of
         {error, Error} ->
             {error, Error};
         ok ->
             execute(Pid, command({verify, {external,
+                                           msg_digest,
                                            <<R:256/signed-integer-big>>,
                                            <<S:256/signed-integer-big>>,
                                            X,
@@ -598,6 +599,17 @@ bool_to_bit(false) -> 0.
 bit_to_bool(1) -> true;
 bit_to_bool(0) -> false.
 
+nonce_target_bits(tempkey) -> 0;
+nonce_target_bits(msg_digest) -> 1;
+nonce_target_bits(altkey) -> 2.
+
+sign_source_bits(tempkey) -> 0;
+sign_source_bits(msg_digest) -> 1.
+
+verify_source_bits(tempkey) -> 0;
+verify_source_bits(msg_digest) -> 1.
+
+
 -spec command(Cmd::atom(), Param1::<<_:8>>, Param2::<<_:16>>, Data::binary()) -> #command{}.
 command(Type, Param1, Param2, Data) ->
     Spec = command_spec(Type),
@@ -609,8 +621,9 @@ command({genkey, private, KeyId}) ->
     command(genkey, <<16#04:8>>, <<KeyId:16/unsigned-little-integer>>, <<>>);
 command({genkey, public, KeyId}) ->
     command(genkey, <<16#00:8>>, <<KeyId:16/unsigned-little-integer>>, <<>>);
-command({nonce, passthrough, Data}) ->
-    command(nonce, <<16#03>>, <<0:16>>, <<Data:4/binary>>);
+command({nonce, passthrough, Target, Data}) ->
+    Param1 = <<(nonce_target_bits(Target)):2, 0:4, 16#03:2>>,
+    command(nonce, Param1, <<0:16>>, <<Data:4/binary>>);
 command({nonce, preseed, Data}) ->
     Param1 = <<16#00>>,
     Param2 = <<16#80, 16#00>>,
@@ -635,11 +648,13 @@ command({digest, {finalize, {sha, Data}}}) ->
     command(sha, <<16#02>>, <<(byte_size(Data)):16/integer-unsigned-little>>, Data);
 command({digest, {finalize, {hmac, Data}}}) ->
     command(sha, <<16#05>>, <<(byte_size(Data)):16/integer-unsigned-little>>, Data);
-command({sign, {external, KeyId}}) ->
-    command(sign, <<16#80>>, <<KeyId:16/integer-unsigned-little>>, <<>>);
-command({verify, {external, R, S, X, Y}}) ->
+command({sign, {external, Source, KeyId}}) ->
+    Param1 = <<2#10:2, (sign_source_bits(Source)):1, 2#00000:5>>,
+    command(sign, Param1, <<KeyId:16/integer-unsigned-little>>, <<>>);
+command({verify, {external, Source, R, S, X, Y}}) ->
+    Param1 = <<2#00:2, (verify_source_bits(Source)):1, 2#00:2, 2#010:3>>,
     Data = <<R/binary, S/binary, X/binary, Y/binary>>,
-    command(verify, <<16#02>>, <<16#04, 16#00>>, Data);
+    command(verify, Param1, <<16#04, 16#00>>, Data);
 command({read, Size, Address}) ->
     Param1 = <<(encode_read_write_size(Size)):1, 0:5, (encode_address_zone(Address)):2>>,
     command(read, Param1, encode_address(Address), <<>>);
