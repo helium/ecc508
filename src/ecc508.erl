@@ -4,11 +4,11 @@
 
 %% API exports
 -export([start_link/0,
-         wake/1,
+         wake/1, idle/1,
          serial_num/1,
          lock/2, lock/3,
          genkey/3,
-         nonce/4,
+         nonce/3,
          digest_init/2, digest_update/3, digest_finalize/3,
          random/1, random/2,
          sign/3, verify/4,
@@ -24,7 +24,7 @@
 %% supporting functions
 -export([encode_address/1,
          read/3, write/3,
-         execute/2, command_spec/1, command/1, command/4, command_to_binary/1, package/1,
+         execute/2, command_spec/1, command/1, command/4,
          to_hex/1
         ]).
 
@@ -62,6 +62,9 @@ start_link() ->
 
 wake(Pid) ->
     execute(Pid, command(wake)).
+
+idle(Pid) ->
+    execute(Pid, idle, command(idle)).
 
 %% @doc Returns the 9 bytes that represent the serial number of the
 %% ECC. Per section 2.2.6 of the Data Sheet the first two, and last
@@ -409,14 +412,10 @@ genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private 
     end.
 
 
-nonce(Pid, passthrough, Target, Data) ->
-    execute(Pid, command({nonce, passthrough, Target, Data}));
-nonce(Pid, preseed, Target, Data) ->
-    execute(Pid, command({nonce, preseed, Target, Data}));
-nonce(Pid, random, Target, Data) ->
-    nonce(Pid, {random, false}, Target, Data);
-nonce(Pid, {random, UpdateSeed}, Target, Data) when is_boolean(UpdateSeed) ->
-    execute(Pid, command({nonce, {random, UpdateSeed}, Target, Data})).
+nonce(Pid, {passthrough, Target}, Data) ->
+    execute(Pid, command({nonce, {passthrough, Target}, Data}));
+nonce(Pid, {random, UpdateSeed}, Data) when is_boolean(UpdateSeed) ->
+    execute(Pid, command({nonce, {random, UpdateSeed}, Data})).
 
 
 -spec pause(I2C::pid(), Selector::non_neg_integer()) -> ok | {error, term()}.
@@ -483,15 +482,20 @@ digest_finalize(Pid, State, FinalData) when byte_size(FinalData) =< 63 ->
 -spec sign(I2C::pid(), KeyId::non_neg_integer(), Data::binary() | {digest, binary()})
           -> {ok, binary()} | {error, term()}.
 sign(Pid, KeyId, {digest, Digest}) ->
-    case nonce(Pid, passthrough, msg_digest, Digest) of
+    case random(Pid) of
         {error, Error} ->
             {error, Error};
-        ok ->
-            case execute(Pid, command({sign, {external, msg_digest, KeyId}})) of
+        {ok, _} ->
+            case nonce(Pid, {passthrough, msg_digest}, Digest) of
                 {error, Error} ->
                     {error, Error};
-                {ok, <<R:256/signed-integer-big, S:256/signed-integer-big>>} ->
-                    {ok, public_key:der_encode('ECDSA-Sig-Value', #'ECDSA-Sig-Value'{r=R, s=S})}
+                ok ->
+                    case execute(Pid, command({sign, {external, msg_digest, KeyId}})) of
+                        {error, Error} ->
+                            {error, Error};
+                        {ok, <<R:256/unsigned-integer-big, S:256/unsigned-integer-big>>} ->
+                            {ok, public_key:der_encode('ECDSA-Sig-Value', #'ECDSA-Sig-Value'{r=R, s=S})}
+                    end
             end
     end;
 sign(Pid, KeyId, Data) ->
@@ -503,14 +507,14 @@ sign(Pid, KeyId, Data) ->
 verify(Pid, {digest, Digest}, Signature, _ECPubKey={#'ECPoint'{point=PubPoint}, _}) ->
     << _:8, X:32/binary, Y:32/binary>> = PubPoint,
     #'ECDSA-Sig-Value'{r=R, s=S} = public_key:der_decode('ECDSA-Sig-Value', Signature),
-    case nonce(Pid, passthrough, msg_digest, Digest) of
+    case nonce(Pid, {passthrough, msg_digest}, Digest) of
         {error, Error} ->
             {error, Error};
         ok ->
             execute(Pid, command({verify, {external,
                                            msg_digest,
-                                           <<R:256/signed-integer-big>>,
-                                           <<S:256/signed-integer-big>>,
+                                           <<R:256/unsigned-integer-big>>,
+                                           <<S:256/unsigned-integer-big>>,
                                            X,
                                            Y}}))
     end;
@@ -553,7 +557,10 @@ command_spec(N=sign)        -> #command_spec{name=N, opcode=16#41, timing_typ=7,
 command_spec(N=updateextra) -> #command_spec{name=N, opcode=16#20, timing_typ=8,  timing_max=10};
 command_spec(N=verify)      -> #command_spec{name=N, opcode=16#45, timing_typ=38, timing_max=58};
 command_spec(N=write)       -> #command_spec{name=N, opcode=16#12, timing_typ=7,  timing_max=26};
-command_spec(N=wake)        -> #command_spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1}. %% not in spec
+%% not in spec
+command_spec(N=wake)        -> #command_spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1};
+command_spec(N=sleep)       -> #command_spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1};
+command_spec(N=idle)        -> #command_spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1}.
 
 
 -spec encode_address_zone(Address::address()) -> 0..2.
@@ -603,6 +610,9 @@ nonce_target_bits(tempkey) -> 0;
 nonce_target_bits(msg_digest) -> 1;
 nonce_target_bits(altkey) -> 2.
 
+nonce_size_bits(Data) when byte_size(Data) == 32 -> 0;
+nonce_size_bits(Data) when byte_size(Data) == 64 -> 1.
+
 sign_source_bits(tempkey) -> 0;
 sign_source_bits(msg_digest) -> 1.
 
@@ -617,21 +627,19 @@ command(Type, Param1, Param2, Data) ->
 
 command(wake) ->
     command(wake, <<0:8>>, <<0:16>>, <<0:184>>);
+command(idle) ->
+    command(idle, <<0:8>>, <<0:16>>, <<>>);
 command({genkey, private, KeyId}) ->
     command(genkey, <<16#04:8>>, <<KeyId:16/unsigned-little-integer>>, <<>>);
 command({genkey, public, KeyId}) ->
     command(genkey, <<16#00:8>>, <<KeyId:16/unsigned-little-integer>>, <<>>);
-command({nonce, passthrough, Target, Data}) ->
-    Param1 = <<(nonce_target_bits(Target)):2, 0:4, 16#03:2>>,
-    command(nonce, Param1, <<0:16>>, <<Data:4/binary>>);
-command({nonce, preseed, Data}) ->
-    Param1 = <<16#00>>,
-    Param2 = <<16#80, 16#00>>,
-    command(nonce, Param1, Param2, <<Data:20/binary>>);
-command({nonce, {random, UpdateSeed}, Data}) ->
-    Param1 = <<(bool_to_bit(UpdateSeed)):8>>,
-    Param2 = <<16#80, 16#00>>,
-    command(nonce, Param1, Param2, <<Data:20/binary>>);
+command({nonce, {passthrough, Target}, Data}) ->
+    Param1 = <<(nonce_target_bits(Target)):2, (nonce_size_bits(Data)):1, 0:3, 16#03:2>>,
+    DataSize = byte_size(Data),
+    command(nonce, Param1, <<0:16>>, <<Data:DataSize/binary>>);
+command({nonce, {random, UpdateSeed}, Data}) when byte_size(Data) == 20 ->
+    Param1 = <<(bool_to_bit(not UpdateSeed)):8>>,
+    command(nonce, Param1, <<0:16>>, <<Data:20/binary>>);
 command({pause, Selector}) ->
     command(pause, <<Selector:8>>, <<0:16>>, <<>>);
 command({random, SeedMode}) ->
@@ -716,10 +724,20 @@ read_response(Pid, Length, Acc) ->
     Bin = i2c:read(Pid, min(Length, 32)),
     read_response(Pid, Length - byte_size(Bin), <<Acc/binary, Bin/binary>>).
 
--spec execute(I2C::pid(), Cmd::#command{}) -> ok | {ok, awake} | {ok, binary()} | {error, term()}.
-execute(Pid, Cmd)->
-    CmdBin = package(command_to_binary(Cmd)),
-    i2c:write(Pid, CmdBin),
+-spec execute(I2C::pid(), Cmd::#command{})
+             -> ok | {ok, awake} | {ok, binary()} | {error, term()}.
+execute(Pid, Cmd) ->
+    execute(Pid, command, Cmd).
+
+-spec execute(I2C::pid(), Word::non_neg_integer(), Cmd::#command{})
+             -> ok | {ok, awake} | {ok, binary()} | {error, term()}.
+execute(Pid, Word, Cmd)->
+    Data = <<(Cmd#command.spec#command_spec.opcode):8,
+             (Cmd#command.param1)/binary,
+             (Cmd#command.param2)/binary,
+             (Cmd#command.data)/binary>>,
+    Bin = package(Word, Data),
+    i2c:write(Pid, Bin),
     case wait_for_response(Pid, {false, get_timestamp()}, Cmd) of
         {error, Error} ->
             {error, Error};
@@ -739,36 +757,22 @@ execute(Pid, Cmd)->
             end
     end.
 
-%% @private
-%% command_to_binary ensures that ESL/Erlang_ALE treats the data
-%% properly by preparing it as one binary, as any other format
-%% prompts the i2c module to prepend data length which we
-%% handle ourselves. (idk how to document pls2halp)
-%% @end
--spec command_to_binary(#command{}) -> binary().
-command_to_binary(Cmd) ->
-    <<(Cmd#command.spec#command_spec.opcode):8,
-      (Cmd#command.param1)/binary,
-      (Cmd#command.param2)/binary,
-      (Cmd#command.data)/binary>>.
-
 -spec package_word(atom()) -> non_neg_integer().
-%% package_word(reset)    -> 16#00;
-%% package_word(sleep)    -> 16#01;
-%% package_word(idle)     -> 16#02;
-%% package_word(reserved) -> 16#04;
+package_word(reset)    -> 16#00;
+package_word(sleep)    -> 16#01;
+package_word(idle)     -> 16#02;
 package_word(command)  -> 16#03.
 
--spec package(binary()) -> binary().
-package(Bin) when byte_size(Bin) < ?CMDGRP_COUNT_MIN ->
+-spec package(Word::atom(), binary()) -> binary().
+package(_Word, Bin) when byte_size(Bin) < ?CMDGRP_COUNT_MIN ->
     throw({ecc_command_too_small, byte_size(Bin)});
-package(Bin) when byte_size(Bin) > ?CMDGRP_COUNT_MAX ->
+package(_Word, Bin) when byte_size(Bin) > ?CMDGRP_COUNT_MAX ->
     throw({ecc_command_too_large, byte_size(Bin)});
-package(Bin) ->
+package(Word, Bin) ->
     PackageLen = byte_size(Bin) + 3,
     LenBin = <<PackageLen, Bin/binary>>,
     CheckSum = crc16:calc(LenBin),
-    <<(package_word(command)):8, LenBin/binary, CheckSum/binary>>.
+    <<(package_word(Word)):8, LenBin/binary, CheckSum/binary>>.
 
 
 get_timestamp() ->
