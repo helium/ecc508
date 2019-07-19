@@ -3,7 +3,7 @@
 -include_lib("public_key/include/public_key.hrl").
 
 %% API exports
--export([start_link/0,
+-export([start_link/0, stop/1,
          wake/1, idle/1,
          serial_num/1,
          lock/2, lock/3,
@@ -56,6 +56,10 @@
 %% address and default max count.
 start_link() ->
     i2c:start_link("i2c-1", 16#60, ?CMDGRP_COUNT_MAX).
+
+%% @doc Stops the given ecc process.
+stop(Pid) ->
+    i2c:stop(Pid).
 
 %%====================================================================
 %% API functions
