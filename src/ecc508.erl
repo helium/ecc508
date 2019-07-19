@@ -12,9 +12,9 @@
          digest_init/2, digest_update/3, digest_finalize/3,
          random/1, random/2,
          sign/3, verify/4,
-         pause/2,
          slot_config_address/1, get_slot_config/2, set_slot_config/3,
-         slot_config_to_bin/1, slot_config_from_bin/1, write_config/2,
+         slot_config_to_bin/1, slot_config_from_bin/1,
+         from_write_config/2, to_write_config/2,
          get_locked/2, get_slot_locked/2,
          key_config_address/1, get_key_config/2, set_key_config/3,
          key_config_to_bin/1, key_config_from_bin/1
@@ -52,7 +52,8 @@
                   data = <<>> :: binary()
                  }).
 
-
+%% @doc Start and link the ecc process with a the default i2c bus,
+%% address and default max count.
 start_link() ->
     i2c:start_link("i2c-1", 16#60, ?CMDGRP_COUNT_MAX).
 
@@ -60,9 +61,14 @@ start_link() ->
 %% API functions
 %%====================================================================
 
+%% @doc Send a wake command to the ecc. This ensures that the ecc
+%% wakes up form its default sleep mode
 wake(Pid) ->
     execute(Pid, command(wake)).
 
+%% @doc Sends an idle command to the ecc. This puts the ecc in idle
+%% state, which disables the sleep watchdog .A subsequent wake/1 call
+%% will re-enable the ecc for commands.
 idle(Pid) ->
     execute(Pid, idle, command(idle)).
 
@@ -158,8 +164,10 @@ slot_config_to_bin(#{write_config := WriteConfig,
       WriteConfig:4,
       WriteKey:4>>.
 
+%% @doc A convenience function to get a slot configuratoin set up to
+%% generate and store ECDSA private keys.
 ecc_slot_config() ->
-    #{ write_config => 2,
+    #{ write_config => from_write_config(genkey, valid),
        write_key => 0,
        is_secret => true,
        encrypt_read => false,
@@ -231,14 +239,17 @@ ecc_slot_config() ->
 -type derive_key_config() :: {roll, mac | no_mac} | {create, mac, no_mac} | invalid.
 -type genkey_config() :: valid | invalid.
 -type priv_write_config() :: invalid | encrypt.
--spec write_config(write | derive_key | genkey, 0..15)
-                  -> write_config() | derive_key_config() | genkey_config() | priv_write_config().
-write_config(write, 0) -> always;
-write_config(write, 1) -> pub_invalid;
-write_config(write, V)  when (V bsr 1) == 1 -> never;
-write_config(write, V)  when (V bsr 2) == 2 -> never;
-write_config(write, V)  when (V band 4) == 4 -> encrypt;
-write_config(derive_key, V) ->
+-spec to_write_config(write | derive_key | genkey, 0..15)
+                     -> write_config() |
+                        derive_key_config() |
+                        genkey_config() |
+                        priv_write_config().
+to_write_config(write, 0) -> always;
+to_write_config(write, 1) -> pub_invalid;
+to_write_config(write, V)  when (V bsr 1) == 1 -> never;
+to_write_config(write, V)  when (V bsr 2) == 2 -> never;
+to_write_config(write, V)  when (V band 4) == 4 -> encrypt;
+to_write_config(derive_key, V) ->
     case V band 2#1011 of
         2 -> {roll, no_mac};
         10 -> {roll, mac};
@@ -246,18 +257,38 @@ write_config(derive_key, V) ->
         11 -> {create, mac};
         _ -> invalid
     end;
-write_config(genkey, V) ->
+to_write_config(genkey, V) ->
     case V band 2#0010 of
         0 -> invalid;
         2 -> valid
     end;
-write_config(priv_write, V) ->
+to_write_config(priv_write, V) ->
     case V band 2#0100 of
         0 -> invalid;
-        1 -> encrypt
+        4 -> encrypt
     end.
 
+%% @doc Converts a given write configuration tuple into it's
+%% value. This can be used as a convenience function when constructing
+%% slot configurations.
+-spec from_write_config(write | derive_key | genkey | priv_write,
+                        write_config() | derive_key_config() | genkey_config() | priv_write_config())
+                       -> 0..15.
+from_write_config(write, always) -> 0;
+from_write_config(write, pub_invalid) -> 1;
+from_write_config(write, never) -> 2;
+from_write_config(write, encrypt) -> 4;
+from_write_config(derive_key, {roll, no_mac}) -> 2;
+from_write_config(derive_key, {roll, mac}) -> 10;
+from_write_config(derive_key, {create, no_mac}) -> 3;
+from_write_config(derive_key, {create, mac}) -> 11;
+from_write_config(genkey, invalid) -> 0;
+from_write_config(genkey, valid) -> 2;
+from_write_config(priv_write, invalid) -> 0;
+from_write_config(priv_write, encrypt) -> 4.
 
+
+%% @doc Gets the lock status for the given zone.
 -spec get_locked(pid(), config | data) -> boolean().
 get_locked(Pid, Zone) ->
     case read(Pid, 4, {config, 2, 5}) of
@@ -270,6 +301,8 @@ get_locked(Pid, Zone) ->
     end.
 
 
+%% @doc Returns whether a given slot is locked or not. Note that the
+%% slot must have been configured as lockable and then locked
 -spec get_slot_locked(pid(), Slot::0..15) -> boolean().
 get_slot_locked(Pid, Slot) ->
     case read(Pid, 4, {config, 2, 6}) of
@@ -279,11 +312,16 @@ get_slot_locked(Pid, Slot) ->
             {error, Error}
     end.
 
+%% @doc Get the configuration zone address for a given key
+%% configuration slot. Note that this is a seprate area from the slot
+%% configuration itself, and is used for key related configuration if
+%% a slot is configured to hold key material.
 -spec key_config_address(Slot::0..15) -> {config, 3, non_neg_integer()}.
 key_config_address(Slot) when Slot >= 0, Slot =< 15 ->
     Offset = (Slot * 2) bsr 2,
     {config, 3, Offset}.
 
+%% @doc Get the key configuraiton for a given slot.
 -spec get_key_config(pid(), Slot::0..15) -> {ok, map()} | {error, term()}.
 get_key_config(Pid, Slot) ->
     case read(Pid, 4, key_config_address(Slot)) of
@@ -296,6 +334,9 @@ get_key_config(Pid, Slot) ->
             {error, Error}
     end.
 
+%% @doc Set the key configuration for a given slot. The configuration
+%% can be passed in either as a map or as a binary as generated by
+%% key_config_to_bin/1.
 -spec set_key_config(pid(), Slot::0..15, Config::map() | binary()) -> ok | {error, term()}.
 set_key_config(Pid, Slot, Config) when is_map(Config)->
     set_key_config(Pid, Slot, key_config_to_bin(Config));
@@ -344,6 +385,10 @@ key_config_from_bin(<<ReqAuth:1,
       pub_info => bit_to_bool(PubInfo)
      }.
 
+%% @doc Returns a binary representing a given key configuration.
+%%
+%% Note that the documentation has MSB first but the wire format
+%% returned is LSB first.
 -spec key_config_to_bin(map()) -> <<_:16>>.
 key_config_to_bin(#{x509_index := X509Index,
                     intrusion_disable := IntrusionDisable,
@@ -371,6 +416,8 @@ key_config_to_bin(#{x509_index := X509Index,
       AuthKey:4
     >>.
 
+%% @doc Returns a key configuration set up to store ECC key private
+%% keys.
 ecc_key_config() ->
     #{ auth_key => 0,
        req_auth => false,
@@ -382,19 +429,35 @@ ecc_key_config() ->
        private => true,
        pub_info => true}.
 
-
+%% @doc Locks the configuration zone, data zone, or individual
+%% slot. Note that for lockign slots, the slot must be configured as
+%% lockable, and the configuration zone must be locked
 -spec lock(pid(), config | data | {slot, 0..15}) -> ok | {error, term()}.
-lock(Pid, Zone) ->
-    lock(Pid, Zone, <<16#00, 16#00>>).
+lock(Pid, ZoneOrSlot) ->
+    lock(Pid, ZoneOrSlot, <<16#00, 16#00>>).
 
+%% @doc Locks the configuration zone, data zone, or individual
+%% slot. Note that for lockign slots, the slot must be configured as
+%% lockable, and the configuration zone must be locked. THis form of
+%% lock expects thhe given CRC to match the CRC of the zone being
+%% locked before the lock succeeds.
 -spec lock(pid(), config | data | {slot, 0..15}, CRC::<<_:16>>) -> ok | {error, term()}.
-lock(Pid, Zone, CRC) ->
-    execute(Pid, command({lock, Zone, CRC})).
+lock(Pid, ZoneOrSlot, CRC) ->
+    execute(Pid, command({lock, ZoneOrSlot, CRC})).
 
-
+%% @doc Generates a key of a given type either into or from a given
+%% slot. For private keys the given slot is expected to be configured
+%% for private key use (see ecc_slot_config/0). The corresponding
+%% public key is returned.
+%%
+%% For public keys the public key is generated from the private key in
+%% the given slot and returned.
 genkey(Pid, Type, KeyId) ->
     genkey(Pid, Type, KeyId, 0).
 
+%% @private The datasheet indicates that generating keys has a small
+%% statistical chance of failing. This funtin allows up to three
+%% retries.
 genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private ->
     case RetryCount of
         3 ->
@@ -411,18 +474,23 @@ genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private 
             end
     end.
 
-
+%% @doc Generates a nonce and returns it, optionally updating the
+%% random seed. For a `passthrough' nonce the given data is stored in
+%% the given temporay storage area in SRAM. The passthrough method is
+%% used for a number of security commands, including signing and
+%% verifiyng.
+-spec nonce(I2C::pid(),
+            {passthrough, msg_digest | tempkey | altkey} | {random, UpdateSeed::boolean()},
+            Data::binary()) -> ok | {error, term()}.
 nonce(Pid, {passthrough, Target}, Data) ->
     execute(Pid, command({nonce, {passthrough, Target}, Data}));
 nonce(Pid, {random, UpdateSeed}, Data) when is_boolean(UpdateSeed) ->
     execute(Pid, command({nonce, {random, UpdateSeed}, Data})).
 
 
--spec pause(I2C::pid(), Selector::non_neg_integer()) -> ok | {error, term()}.
-pause(Pid, Selector) ->
-    execute(Pid, command({pause, Selector})).
-
-
+%% @doc Generates a random series of bytes and update the seed. Note
+%% that a standard test pattern is returned when the configuration
+%% zone is not locked.
 -spec random(I2C::pid()) -> {ok, binary()} | {error, term()}.
 random(Pid) ->
     random(Pid, 16#00).
@@ -478,7 +546,9 @@ digest_finalize(Pid, State, FinalData) when byte_size(FinalData) =< 63 ->
 
 
 %% @doc Signs a given binary with the private key in the given key
-%% slot.
+%% slot. The given data can be either a binary which will be sha256 or
+%% a custom digest for which the digest tuple can be used to bypass
+%% the sha method.
 -spec sign(I2C::pid(), KeyId::non_neg_integer(), Data::binary() | {digest, binary()})
           -> {ok, binary()} | {error, term()}.
 sign(Pid, KeyId, {digest, Digest}) ->
@@ -502,6 +572,8 @@ sign(Pid, KeyId, Data) ->
     sign(Pid, KeyId, {digest, crypto:hash(sha256, Data)}).
 
 
+%% @doc Verifiies a message or it's digest using a given signature and
+%% public key.
 -spec verify(I2C::pid(), Data::binary() | {digest, binary()},
              Signature::binary(), PubKey::public_key:public_key()) -> ok | {error, term()}.
 verify(Pid, {digest, Digest}, Signature, _ECPubKey={#'ECPoint'{point=PubPoint}, _}) ->
@@ -522,10 +594,16 @@ verify(Pid, Data, Signature, ECPubKey) ->
     verify(Pid, {digest, crypto:hash(sha256, Data)}, Signature, ECPubKey).
 
 
+%% @doc Read 4 or 32 bytes from a given zone and block. The address
+%% can be passed in using the convenience tuples representing address
+%% in either the config, data or otp zones.
 -spec read(I2C::pid(), Size::4 | 32, Address::address()) -> {ok, binary()} | {error, term()}.
 read(Pid, Size, Address) ->
     execute(Pid, command({read, Size, Address})).
 
+%% @doc Writes a given binary to a given address. The address can be
+%% passed in using the convenience tuples representing address in
+%% either the config, data or otp zones.
 -spec write(I2C::pid(), Address::address(), Data::<<_:32>> | <<_:256>>) -> ok | {error, term()}.
 write(Pid, Address, <<Data/binary>>) ->
     execute(Pid, command({write, Address, Data})).
