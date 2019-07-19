@@ -289,7 +289,7 @@ from_write_config(priv_write, encrypt) -> 4.
 
 
 %% @doc Gets the lock status for the given zone.
--spec get_locked(pid(), config | data) -> boolean().
+-spec get_locked(pid(), config | data) -> {ok, boolean()} | {error, term()}.
 get_locked(Pid, Zone) ->
     case read(Pid, 4, {config, 2, 5}) of
         {ok, <<_:16, LockData:8, LockConfig:8>>} ->
@@ -452,12 +452,15 @@ lock(Pid, ZoneOrSlot, CRC) ->
 %%
 %% For public keys the public key is generated from the private key in
 %% the given slot and returned.
+-spec genkey(I2C::pid(), Type::private | public, Slot::0..15) -> {ok, public_key:public_key()} | {error, term()}.
 genkey(Pid, Type, KeyId) ->
     genkey(Pid, Type, KeyId, 0).
 
 %% @private The datasheet indicates that generating keys has a small
 %% statistical chance of failing. This funtin allows up to three
 %% retries.
+-spec genkey(I2C::pid(), private | public, Slot::non_neg_integer(), RetryCount::non_neg_integer())
+            -> {ok, public_key:public_key()} | {error, term()}.
 genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private ->
     case RetryCount of
         3 ->
@@ -465,7 +468,7 @@ genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private 
         _ ->
             case execute(Pid, command({genkey, Type, KeyId})) of
                 {error, ecc_response_ecc_fault} ->
-                    genkey(Pid, private, KeyId, RetryCount);
+                    genkey(Pid, Type, KeyId, RetryCount + 1);
                 {error, Error} ->
                     {error, Error};
                 {ok, Data} ->
@@ -807,7 +810,7 @@ read_response(Pid, Length, Acc) ->
 execute(Pid, Cmd) ->
     execute(Pid, command, Cmd).
 
--spec execute(I2C::pid(), Word::non_neg_integer(), Cmd::#command{})
+-spec execute(I2C::pid(), Word::reset | idle | command, Cmd::#command{})
              -> ok | {ok, awake} | {ok, binary()} | {error, term()}.
 execute(Pid, Word, Cmd)->
     Data = <<(Cmd#command.spec#command_spec.opcode):8,
@@ -836,8 +839,8 @@ execute(Pid, Word, Cmd)->
     end.
 
 -spec package_word(atom()) -> non_neg_integer().
-package_word(reset)    -> 16#00;
-package_word(sleep)    -> 16#01;
+%% package_word(reset)    -> 16#00;
+%% package_word(sleep)    -> 16#01;
 package_word(idle)     -> 16#02;
 package_word(command)  -> 16#03.
 
