@@ -5,7 +5,7 @@
 
 -module(crc16).
 
--export([calc/1]).
+-export([calc/1, rev/1]).
 
 -spec calc(binary()) -> <<_:16>>.
 calc(Bin) ->
@@ -31,7 +31,7 @@ calc_small(Value, ShiftRegister, CRC) when ShiftRegister =< 128 ->
 calc_small(_, ShiftRegister, CRC) when ShiftRegister > 128 ->
 	CRC.
 
+-spec rev(<<_:16>>) -> <<_:16>>.
 rev(Binary) ->
-	Size = erlang:size(Binary)*8,
-	<<X:Size/integer-little>> = Binary,
-	<<X:Size/integer-big>>.
+	<<X:16/integer-little>> = Binary,
+	<<X:16/integer-big>>.
