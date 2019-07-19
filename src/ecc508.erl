@@ -8,6 +8,7 @@
          serial_num/1,
          lock/2, lock/3,
          genkey/3,
+         ecdh/3,
          nonce/3,
          digest_init/2, digest_update/3, digest_finalize/3,
          random/1, random/2,
@@ -481,6 +482,13 @@ genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private 
             end
     end.
 
+%% @doc Compputes a premaster secret from a given private keyslot and
+%% a given public key. The computed key isreturned in the clear
+ecdh(Pid, KeyId, {#'ECPoint'{point=PubPoint}, _}) ->
+    << _:8, X:32/binary, Y:32/binary>> = PubPoint,
+    execute(Pid, command({ecdh, KeyId, X, Y})).
+
+
 %% @doc Generates a nonce and returns it, optionally updating the
 %% random seed. For a `passthrough' nonce the given data is stored in
 %% the given temporay storage area in SRAM. The passthrough method is
@@ -766,8 +774,9 @@ command({lock, Zone, CRC}) ->
                  _ -> 0
              end,
     Param1 = <<CRCBit:1, 0:1, SlotBits:4, ZoneBits:2>>,
-    command(lock, Param1, crc16:rev(CRC), <<>>).
-
+    command(lock, Param1, crc16:rev(CRC), <<>>);
+command({ecdh, KeyId, X, Y}) ->
+    command(ecdh, <<16#00>>, <<KeyId:16/unsigned-little-integer>>, <<X/binary, Y/binary>>).
 
 
 to_hex(Bin) ->
