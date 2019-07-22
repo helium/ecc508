@@ -15,6 +15,7 @@
          sign/3, verify/4,
          slot_config_address/1, get_slot_config/2, set_slot_config/3,
          slot_config_to_bin/1, slot_config_from_bin/1,
+         from_read_key/1, to_read_key/1,
          from_write_config/2, to_write_config/2,
          get_locked/2, get_slot_locked/2,
          key_config_address/1, get_key_config/2, set_key_config/3,
@@ -133,7 +134,6 @@ set_slot_config(Pid, Slot, Config) when is_binary(Config) ->
             {error, Error}
     end.
 
-
 %% @doc Converts a given 16 bit binary to a slot configuration map.
 -spec slot_config_from_bin(<<_:16>>) -> map().
 slot_config_from_bin(<<IsSecret:1,
@@ -149,7 +149,7 @@ slot_config_from_bin(<<IsSecret:1,
       encrypt_read => bit_to_bool(EncryptRead),
       limited_use => bit_to_bool(LimitedUse),
       no_mac => bit_to_bool(NoMac),
-      read_key => ReadKey}.
+      read_key => to_read_key(ReadKey) }.
 
  %% @doc Converts a given slot configuration map to a binary. The
  %% resulting binary can be used in a `set_slot_config' call.
@@ -165,7 +165,7 @@ slot_config_to_bin(#{write_config := WriteConfig,
       (bool_to_bit(EncryptRead)):1,
       (bool_to_bit(LimitedUse)):1,
       (bool_to_bit(NoMac)):1,
-      ReadKey:4,
+      (from_read_key(ReadKey)):4,
       WriteConfig:4,
       WriteKey:4>>.
 
@@ -178,8 +178,41 @@ ecc_slot_config() ->
        encrypt_read => false,
        limited_use => false,
        no_mac => true,
-       read_key => 2#0011
+       read_key => [internal_signatures, external_signatures]
      }.
+
+-type read_key() :: ecdh_write_slot | ecdh_operation | internal_signatures | external_signatures.
+-spec to_read_key(non_neg_integer ()) -> [read_key ()].
+to_read_key(V) ->
+    to_read_key(V, [{2#1000, ecdh_write_slot},
+                    {2#0100, ecdh_operation},
+                    {2#0010, internal_signatures},
+                    {2#0001, external_signatures}],
+                []).
+
+to_read_key(_, [], Acc) ->
+    lists:reverse(Acc);
+to_read_key(V, [{Mask, N} | Tail], Acc) ->
+    case V band Mask == Mask of
+        true -> to_read_key(V, Tail, [N | Acc]);
+        false -> to_read_key(V, Tail, Acc)
+    end.
+
+-spec from_read_key([read_key()]) -> non_neg_integer().
+from_read_key(Keys) ->
+    from_read_key(Keys, 0).
+
+from_read_key([], Acc) ->
+    Acc;
+from_read_key([ecdh_write_slot | Tail], Acc) ->
+    from_read_key(Tail, Acc bor 2#1000);
+from_read_key([ecdh_operation | Tail], Acc) ->
+    from_read_key(Tail, Acc bor 2#0100);
+from_read_key([internal_signatures | Tail], Acc) ->
+    from_read_key(Tail, Acc bor 2#0010);
+from_read_key([external_signatures | Tail], Acc) ->
+    from_read_key(Tail, Acc bor 2#0001).
+
 
 %% @doc Get write cofiguration from the write_config slot bits for a
 %% given command. The interpretation of the write_config bits differs
