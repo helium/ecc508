@@ -520,6 +520,8 @@ genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private 
                     genkey(Pid, Type, KeyId, RetryCount + 1);
                 {error, Error} ->
                     {error, Error};
+                {ok, awake} ->
+                    {error, ecc_asleep};
                 {ok, Data} ->
                     PubPoint = <<4:8, Data/binary>>,
                     {ok, {#'ECPoint'{point=PubPoint}, {namedCurve, ?secp256r1}}}
@@ -568,6 +570,7 @@ random(Pid, Seed) ->
 digest_init(Pid, Kind) ->
     case execute(Pid,command({digest, {init, Kind}})) of
         ok -> {ok, #digest{kind=Kind}};
+        {ok, awake} -> {error, ecc_asleep};
         {error, Error} -> {error, Error}
     end.
 
@@ -579,6 +582,7 @@ digest_update(_Pid, State=#digest{}, {data, <<>>}) ->
 digest_update(Pid, State=#digest{}, {public, Slot}) ->
     case execute(Pid, command({digest, {public, Slot}})) of
         ok -> {ok, State};
+        {ok, awake} -> {error, ecc_asleep};
         {error, Error} -> {error, Error}
     end;
 digest_update(Pid, State=#digest{}, {data, Data}) ->
@@ -587,11 +591,13 @@ digest_update(Pid, State=#digest{}, {data, Data}) ->
             <<Part:64/binary, Rest/binary>> = Data,
             case execute(Pid, command({digest, {update, Part}})) of
                 ok -> digest_update(Pid, State, {data, Rest});
+                {ok, awake} -> {error, ecc_asleep};
                 {error, Error} -> {error, Error}
             end;
         false ->
             case execute(Pid, command({digest, {update, Data}})) of
                 ok -> {ok, State};
+                {ok, awake} -> {error, ecc_asleep};
                 {error, Error} -> {error, Error}
             end
     end.
@@ -622,6 +628,8 @@ sign(Pid, KeyId, {digest, Digest}) ->
                     case execute(Pid, command({sign, {external, msg_digest, KeyId}})) of
                         {error, Error} ->
                             {error, Error};
+                        {ok, awake} ->
+                            {error, ecc_asleep};
                         {ok, <<R:256/unsigned-integer-big, S:256/unsigned-integer-big>>} ->
                             {ok, public_key:der_encode('ECDSA-Sig-Value', #'ECDSA-Sig-Value'{r=R, s=S})}
                     end
