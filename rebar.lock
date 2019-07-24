@@ -1,4 +1,4 @@
 [{<<"erlang_ale">>,
   {git,"https://github.com/helium/erlang_ale",
-       {ref,"51660733919319372b78412b8fef08bbb53b8c29"}},
+       {ref,"9db629ebf946e9b32a4dd5efefea3d16c3f808b9"}},
   0}].
