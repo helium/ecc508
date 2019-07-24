@@ -693,7 +693,6 @@ spec(N=info)        -> #spec{name=N, opcode=16#30, timing_typ=0,  timing_max=1};
 spec(N=lock)        -> #spec{name=N, opcode=16#17, timing_typ=8,  timing_max=32};
 spec(N=mac)         -> #spec{name=N, opcode=16#08, timing_typ=5,  timing_max=14};
 spec(N=nonce)       -> #spec{name=N, opcode=16#16, timing_typ=0,  timing_max=7};
-spec(N=pause)       -> #spec{name=N, opcode=16#01, timing_typ=0,  timing_max=3};
 spec(N=privwrite)   -> #spec{name=N, opcode=16#46, timing_typ=1,  timing_max=48};
 spec(N=random)      -> #spec{name=N, opcode=16#1B, timing_typ=1,  timing_max=23, resp=32};
 spec(N=read)        -> #spec{name=N, opcode=16#02, timing_typ=0,  timing_max=1};
@@ -790,8 +789,6 @@ command({nonce, {passthrough, Target}, Data}) ->
 command({nonce, {random, UpdateSeed}, Data}) when byte_size(Data) == 20 ->
     Param1 = <<(bool_to_bit(not UpdateSeed)):8>>,
     command(nonce, Param1, <<0:16>>, <<Data:20/binary>>);
-command({pause, Selector}) ->
-    command(pause, <<Selector:8>>, <<0:16>>, <<>>);
 command({random, SeedMode}) ->
     command(random, <<SeedMode:8>>, <<0:16>>, <<>>);
 command({digest, {init, sha}}) ->
