@@ -3,17 +3,19 @@
 -include_lib("public_key/include/public_key.hrl").
 
 %% API exports
--export([start_link/0,
-         wake/1, idle/1,
+-export([start_link/0, stop/1,
+         wake/1, idle/1, sleep/1, reset/1,
          serial_num/1,
          lock/2, lock/3,
          genkey/3,
+         ecdh/3,
          nonce/3,
          digest_init/2, digest_update/3, digest_finalize/3,
          random/1, random/2,
          sign/3, verify/4,
          slot_config_address/1, get_slot_config/2, set_slot_config/3,
          slot_config_to_bin/1, slot_config_from_bin/1,
+         from_read_key/1, to_read_key/1,
          from_write_config/2, to_write_config/2,
          get_locked/2, get_slot_locked/2,
          key_config_address/1, get_key_config/2, set_key_config/3,
@@ -24,7 +26,7 @@
 %% supporting functions
 -export([encode_address/1,
          read/3, write/3,
-         execute/2, command_spec/1, command/1, command/4,
+         execute/2, spec/1, command/1, command/4,
          to_hex/1
         ]).
 
@@ -37,16 +39,16 @@
 -define(CMDGRP_COUNT_MIN, 4).
 -define(CMDGRP_COUNT_MAX, 155).
 
--record(command_spec, {
-                       name :: atom(),
-                       opcode :: non_neg_integer(),
-                       timing_typ :: non_neg_integer(),
-                       timing_max :: pos_integer(),
-                       resp = 4 :: non_neg_integer()
-                      }).
+-record(spec, {
+               name :: atom(),
+               opcode :: non_neg_integer(),
+               timing_typ :: non_neg_integer(),
+               timing_max :: pos_integer(),
+               resp = 4 :: non_neg_integer()
+              }).
 
 -record(command, {
-                  spec :: #command_spec{},
+                  spec :: #spec{},
                   param1 :: <<_:8>>,
                   param2 :: <<_:16>>,
                   data = <<>> :: binary()
@@ -56,6 +58,10 @@
 %% address and default max count.
 start_link() ->
     i2c:start_link("i2c-1", 16#60, ?CMDGRP_COUNT_MAX).
+
+%% @doc Stops the given ecc process.
+stop(Pid) ->
+    i2c:stop(Pid).
 
 %%====================================================================
 %% API functions
@@ -71,6 +77,15 @@ wake(Pid) ->
 %% will re-enable the ecc for commands.
 idle(Pid) ->
     execute(Pid, idle, command(idle)).
+
+%% @doc Sends a sleep command to the ecc. This puts the ecc in low
+%% power mode.
+sleep(Pid) ->
+    execute(Pid, sleep, command(sleep)).
+
+%% @doc Sends a reset command to the ecc.
+reset(Pid) ->
+    execute(Pid, reset, command(reset)).
 
 %% @doc Returns the 9 bytes that represent the serial number of the
 %% ECC. Per section 2.2.6 of the Data Sheet the first two, and last
@@ -128,7 +143,6 @@ set_slot_config(Pid, Slot, Config) when is_binary(Config) ->
             {error, Error}
     end.
 
-
 %% @doc Converts a given 16 bit binary to a slot configuration map.
 -spec slot_config_from_bin(<<_:16>>) -> map().
 slot_config_from_bin(<<IsSecret:1,
@@ -138,13 +152,14 @@ slot_config_from_bin(<<IsSecret:1,
                        ReadKey:4,
                        WriteConfig:4,
                        WriteKey:4>>) ->
+    io:format("READ KEY ~p~n", [ReadKey]),
     #{write_config => WriteConfig,
-      write_key => WriteKey,
-      is_secret => bit_to_bool(IsSecret),
-      encrypt_read => bit_to_bool(EncryptRead),
-      limited_use => bit_to_bool(LimitedUse),
-      no_mac => bit_to_bool(NoMac),
-      read_key => ReadKey}.
+                  write_key => WriteKey,
+                  is_secret => bit_to_bool(IsSecret),
+                  encrypt_read => bit_to_bool(EncryptRead),
+                  limited_use => bit_to_bool(LimitedUse),
+                  no_mac => bit_to_bool(NoMac),
+                  read_key => to_read_key(ReadKey) }.
 
  %% @doc Converts a given slot configuration map to a binary. The
  %% resulting binary can be used in a `set_slot_config' call.
@@ -160,7 +175,7 @@ slot_config_to_bin(#{write_config := WriteConfig,
       (bool_to_bit(EncryptRead)):1,
       (bool_to_bit(LimitedUse)):1,
       (bool_to_bit(NoMac)):1,
-      ReadKey:4,
+      (from_read_key(ReadKey)):4,
       WriteConfig:4,
       WriteKey:4>>.
 
@@ -173,8 +188,41 @@ ecc_slot_config() ->
        encrypt_read => false,
        limited_use => false,
        no_mac => true,
-       read_key => 2#0011
+       read_key => [internal_signatures, external_signatures]
      }.
+
+-type read_key() :: ecdh_write_slot | ecdh_operation | internal_signatures | external_signatures.
+-spec to_read_key(non_neg_integer ()) -> [read_key ()].
+to_read_key(V) ->
+    to_read_key(V, [{2#1000, ecdh_write_slot},
+                    {2#0100, ecdh_operation},
+                    {2#0010, internal_signatures},
+                    {2#0001, external_signatures}],
+                []).
+
+to_read_key(_, [], Acc) ->
+    lists:reverse(Acc);
+to_read_key(V, [{Mask, N} | Tail], Acc) ->
+    case V band Mask == Mask of
+        true -> to_read_key(V, Tail, [N | Acc]);
+        false -> to_read_key(V, Tail, Acc)
+    end.
+
+-spec from_read_key([read_key()]) -> non_neg_integer().
+from_read_key(Keys) ->
+    from_read_key(Keys, 0).
+
+from_read_key([], Acc) ->
+    Acc;
+from_read_key([ecdh_write_slot | Tail], Acc) ->
+    from_read_key(Tail, Acc bor 2#1000);
+from_read_key([ecdh_operation | Tail], Acc) ->
+    from_read_key(Tail, Acc bor 2#0100);
+from_read_key([internal_signatures | Tail], Acc) ->
+    from_read_key(Tail, Acc bor 2#0010);
+from_read_key([external_signatures | Tail], Acc) ->
+    from_read_key(Tail, Acc bor 2#0001).
+
 
 %% @doc Get write cofiguration from the write_config slot bits for a
 %% given command. The interpretation of the write_config bits differs
@@ -452,7 +500,8 @@ lock(Pid, ZoneOrSlot, CRC) ->
 %%
 %% For public keys the public key is generated from the private key in
 %% the given slot and returned.
--spec genkey(I2C::pid(), Type::private | public, Slot::0..15) -> {ok, public_key:public_key()} | {error, term()}.
+-spec genkey(I2C::pid(), Type::private | public, Slot::0..15)
+            -> {ok, public_key:public_key()} | {error, term()}.
 genkey(Pid, Type, KeyId) ->
     genkey(Pid, Type, KeyId, 0).
 
@@ -471,11 +520,20 @@ genkey(Pid, Type, KeyId, RetryCount) when Type == public orelse Type == private 
                     genkey(Pid, Type, KeyId, RetryCount + 1);
                 {error, Error} ->
                     {error, Error};
+                {ok, awake} ->
+                    {error, ecc_asleep};
                 {ok, Data} ->
                     PubPoint = <<4:8, Data/binary>>,
                     {ok, {#'ECPoint'{point=PubPoint}, {namedCurve, ?secp256r1}}}
             end
     end.
+
+%% @doc Compputes a premaster secret from a given private keyslot and
+%% a given public key. The computed key isreturned in the clear
+ecdh(Pid, KeyId, {#'ECPoint'{point=PubPoint}, _}) ->
+    << _:8, X:32/binary, Y:32/binary>> = PubPoint,
+    execute(Pid, command({ecdh, KeyId, X, Y})).
+
 
 %% @doc Generates a nonce and returns it, optionally updating the
 %% random seed. For a `passthrough' nonce the given data is stored in
@@ -512,6 +570,7 @@ random(Pid, Seed) ->
 digest_init(Pid, Kind) ->
     case execute(Pid,command({digest, {init, Kind}})) of
         ok -> {ok, #digest{kind=Kind}};
+        {ok, awake} -> {error, ecc_asleep};
         {error, Error} -> {error, Error}
     end.
 
@@ -523,6 +582,7 @@ digest_update(_Pid, State=#digest{}, {data, <<>>}) ->
 digest_update(Pid, State=#digest{}, {public, Slot}) ->
     case execute(Pid, command({digest, {public, Slot}})) of
         ok -> {ok, State};
+        {ok, awake} -> {error, ecc_asleep};
         {error, Error} -> {error, Error}
     end;
 digest_update(Pid, State=#digest{}, {data, Data}) ->
@@ -531,11 +591,13 @@ digest_update(Pid, State=#digest{}, {data, Data}) ->
             <<Part:64/binary, Rest/binary>> = Data,
             case execute(Pid, command({digest, {update, Part}})) of
                 ok -> digest_update(Pid, State, {data, Rest});
+                {ok, awake} -> {error, ecc_asleep};
                 {error, Error} -> {error, Error}
             end;
         false ->
             case execute(Pid, command({digest, {update, Data}})) of
                 ok -> {ok, State};
+                {ok, awake} -> {error, ecc_asleep};
                 {error, Error} -> {error, Error}
             end
     end.
@@ -566,6 +628,8 @@ sign(Pid, KeyId, {digest, Digest}) ->
                     case execute(Pid, command({sign, {external, msg_digest, KeyId}})) of
                         {error, Error} ->
                             {error, Error};
+                        {ok, awake} ->
+                            {error, ecc_asleep};
                         {ok, <<R:256/unsigned-integer-big, S:256/unsigned-integer-big>>} ->
                             {ok, public_key:der_encode('ECDSA-Sig-Value', #'ECDSA-Sig-Value'{r=R, s=S})}
                     end
@@ -617,31 +681,31 @@ write(Pid, Address, <<Data/binary>>) ->
 %% Internal
 %%
 
--spec command_spec(atom()) -> #command_spec{}.
-command_spec(N=checkmac)    -> #command_spec{name=N, opcode=16#28, timing_typ=5,  timing_max=13};
-command_spec(N=counter)     -> #command_spec{name=N, opcode=16#24, timing_typ=5,  timing_max=20};
-command_spec(N=derivekey)   -> #command_spec{name=N, opcode=16#24, timing_typ=2,  timing_max=50};
-command_spec(N=ecdh)        -> #command_spec{name=N, opcode=16#43, timing_typ=38, timing_max=58};
-command_spec(N=gendig)      -> #command_spec{name=N, opcode=16#15, timing_typ=5,  timing_max=11};
-command_spec(N=genkey)      -> #command_spec{name=N, opcode=16#40, timing_typ=11, timing_max=115};
-command_spec(N=hmac)        -> #command_spec{name=N, opcode=16#11, timing_typ=13, timing_max=23};
-command_spec(N=info)        -> #command_spec{name=N, opcode=16#30, timing_typ=0,  timing_max=1};
-command_spec(N=lock)        -> #command_spec{name=N, opcode=16#17, timing_typ=8,  timing_max=32};
-command_spec(N=mac)         -> #command_spec{name=N, opcode=16#08, timing_typ=5,  timing_max=14};
-command_spec(N=nonce)       -> #command_spec{name=N, opcode=16#16, timing_typ=0,  timing_max=7};
-command_spec(N=pause)       -> #command_spec{name=N, opcode=16#01, timing_typ=0,  timing_max=3};
-command_spec(N=privwrite)   -> #command_spec{name=N, opcode=16#46, timing_typ=1,  timing_max=48};
-command_spec(N=random)      -> #command_spec{name=N, opcode=16#1B, timing_typ=1,  timing_max=23, resp=32};
-command_spec(N=read)        -> #command_spec{name=N, opcode=16#02, timing_typ=0,  timing_max=1};
-command_spec(N=sha)         -> #command_spec{name=N, opcode=16#47, timing_typ=42, timing_max=50};
-command_spec(N=sign)        -> #command_spec{name=N, opcode=16#41, timing_typ=7,  timing_max=9};
-command_spec(N=updateextra) -> #command_spec{name=N, opcode=16#20, timing_typ=8,  timing_max=10};
-command_spec(N=verify)      -> #command_spec{name=N, opcode=16#45, timing_typ=38, timing_max=58};
-command_spec(N=write)       -> #command_spec{name=N, opcode=16#12, timing_typ=7,  timing_max=26};
+-spec spec(Name::atom()) -> #spec{}.
+spec(N=checkmac)    -> #spec{name=N, opcode=16#28, timing_typ=5,  timing_max=13};
+spec(N=counter)     -> #spec{name=N, opcode=16#24, timing_typ=5,  timing_max=20};
+spec(N=derivekey)   -> #spec{name=N, opcode=16#24, timing_typ=2,  timing_max=50};
+spec(N=ecdh)        -> #spec{name=N, opcode=16#43, timing_typ=38, timing_max=58};
+spec(N=gendig)      -> #spec{name=N, opcode=16#15, timing_typ=5,  timing_max=11};
+spec(N=genkey)      -> #spec{name=N, opcode=16#40, timing_typ=11, timing_max=115};
+spec(N=hmac)        -> #spec{name=N, opcode=16#11, timing_typ=13, timing_max=23};
+spec(N=info)        -> #spec{name=N, opcode=16#30, timing_typ=0,  timing_max=1};
+spec(N=lock)        -> #spec{name=N, opcode=16#17, timing_typ=8,  timing_max=32};
+spec(N=mac)         -> #spec{name=N, opcode=16#08, timing_typ=5,  timing_max=14};
+spec(N=nonce)       -> #spec{name=N, opcode=16#16, timing_typ=0,  timing_max=7};
+spec(N=privwrite)   -> #spec{name=N, opcode=16#46, timing_typ=1,  timing_max=48};
+spec(N=random)      -> #spec{name=N, opcode=16#1B, timing_typ=1,  timing_max=23, resp=32};
+spec(N=read)        -> #spec{name=N, opcode=16#02, timing_typ=0,  timing_max=1};
+spec(N=sha)         -> #spec{name=N, opcode=16#47, timing_typ=42, timing_max=50};
+spec(N=sign)        -> #spec{name=N, opcode=16#41, timing_typ=7,  timing_max=9};
+spec(N=updateextra) -> #spec{name=N, opcode=16#20, timing_typ=8,  timing_max=10};
+spec(N=verify)      -> #spec{name=N, opcode=16#45, timing_typ=38, timing_max=58};
+spec(N=write)       -> #spec{name=N, opcode=16#12, timing_typ=7,  timing_max=26};
 %% not in spec
-command_spec(N=wake)        -> #command_spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1};
-command_spec(N=sleep)       -> #command_spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1};
-command_spec(N=idle)        -> #command_spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1}.
+spec(N=wake)        -> #spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1};
+spec(N=sleep)       -> #spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1};
+spec(N=idle)        -> #spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1};
+spec(N=reset)       -> #spec{name=N, opcode=16#00, timing_typ=0,  timing_max=1}.
 
 
 -spec encode_address_zone(Address::address()) -> 0..2.
@@ -703,13 +767,17 @@ verify_source_bits(msg_digest) -> 1.
 
 -spec command(Cmd::atom(), Param1::<<_:8>>, Param2::<<_:16>>, Data::binary()) -> #command{}.
 command(Type, Param1, Param2, Data) ->
-    Spec = command_spec(Type),
+    Spec = spec(Type),
     #command{spec=Spec, param1=Param1, param2=Param2, data=Data}.
 
 command(wake) ->
     command(wake, <<0:8>>, <<0:16>>, <<0:184>>);
 command(idle) ->
     command(idle, <<0:8>>, <<0:16>>, <<>>);
+command(sleep) ->
+    command(sleep, <<0:8>>, <<0:16>>, <<>>);
+command(reset) ->
+    command(reset, <<0:8>>, <<0:16>>, <<>>);
 command({genkey, private, KeyId}) ->
     command(genkey, <<16#04:8>>, <<KeyId:16/unsigned-little-integer>>, <<>>);
 command({genkey, public, KeyId}) ->
@@ -721,8 +789,6 @@ command({nonce, {passthrough, Target}, Data}) ->
 command({nonce, {random, UpdateSeed}, Data}) when byte_size(Data) == 20 ->
     Param1 = <<(bool_to_bit(not UpdateSeed)):8>>,
     command(nonce, Param1, <<0:16>>, <<Data:20/binary>>);
-command({pause, Selector}) ->
-    command(pause, <<Selector:8>>, <<0:16>>, <<>>);
 command({random, SeedMode}) ->
     command(random, <<SeedMode:8>>, <<0:16>>, <<>>);
 command({digest, {init, sha}}) ->
@@ -762,8 +828,9 @@ command({lock, Zone, CRC}) ->
                  _ -> 0
              end,
     Param1 = <<CRCBit:1, 0:1, SlotBits:4, ZoneBits:2>>,
-    command(lock, Param1, crc16:rev(CRC), <<>>).
-
+    command(lock, Param1, crc16:rev(CRC), <<>>);
+command({ecdh, KeyId, X, Y}) ->
+    command(ecdh, <<16#00>>, <<KeyId:16/unsigned-little-integer>>, <<X/binary, Y/binary>>).
 
 
 to_hex(Bin) ->
@@ -771,10 +838,14 @@ to_hex(Bin) ->
 
 -spec wait_for_response(I2C::pid(), {WaitExtra::boolean(), WaitStartTime::pos_integer()}, Cmd::#command{})
                        -> {error, term()} | {ok, pos_integer()}.
+wait_for_response(_Pid, _, #command{spec=#spec{name=reset}}) ->
+    ok;
+wait_for_response(_Pid, _, #command{spec=#spec{name=sleep}}) ->
+    ok;
 wait_for_response(Pid, {Extra, StartTime}, Cmd=#command{spec=Spec}) ->
     case Extra of
-        false -> timer:sleep(Spec#command_spec.timing_typ);
-        true -> timer:sleep(max(0, Spec#command_spec.timing_max - (get_timestamp() - StartTime)))
+        false -> timer:sleep(Spec#spec.timing_typ);
+        true -> timer:sleep(max(0, Spec#spec.timing_max - (get_timestamp() - StartTime)))
     end,
     case i2c:read(Pid, 1) of
         {error, i2c_read_failed} ->
@@ -810,10 +881,10 @@ read_response(Pid, Length, Acc) ->
 execute(Pid, Cmd) ->
     execute(Pid, command, Cmd).
 
--spec execute(I2C::pid(), Word::reset | idle | command, Cmd::#command{})
+-spec execute(I2C::pid(), Word::reset | idle | command | sleep, Cmd::#command{})
              -> ok | {ok, awake} | {ok, binary()} | {error, term()}.
 execute(Pid, Word, Cmd)->
-    Data = <<(Cmd#command.spec#command_spec.opcode):8,
+    Data = <<(Cmd#command.spec#spec.opcode):8,
              (Cmd#command.param1)/binary,
              (Cmd#command.param2)/binary,
              (Cmd#command.data)/binary>>,
@@ -822,6 +893,8 @@ execute(Pid, Word, Cmd)->
     case wait_for_response(Pid, {false, get_timestamp()}, Cmd) of
         {error, Error} ->
             {error, Error};
+        ok ->
+            ok;
         {ok, Length} ->
             case read_response(Pid, Length, <<>>) of
                 {error, Error} ->
@@ -839,8 +912,8 @@ execute(Pid, Word, Cmd)->
     end.
 
 -spec package_word(atom()) -> non_neg_integer().
-%% package_word(reset)    -> 16#00;
-%% package_word(sleep)    -> 16#01;
+package_word(reset)    -> 16#00;
+package_word(sleep)    -> 16#01;
 package_word(idle)     -> 16#02;
 package_word(command)  -> 16#03.
 
