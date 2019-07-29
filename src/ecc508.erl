@@ -351,7 +351,7 @@ get_locked(Pid, Zone) ->
 
 %% @doc Returns whether a given slot is locked or not. Note that the
 %% slot must have been configured as lockable and then locked
--spec get_slot_locked(pid(), Slot::0..15) -> boolean().
+-spec get_slot_locked(pid(), Slot::0..15) -> boolean() | {error, term()}.
 get_slot_locked(Pid, Slot) ->
     case read(Pid, 4, {config, 2, 6}) of
         {ok, <<LockBits:16/unsigned-integer-little, _/binary>>} ->
