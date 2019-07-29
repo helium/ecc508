@@ -837,7 +837,7 @@ to_hex(Bin) ->
     << <<Y>> ||<<X:4>> <= Bin, Y <- integer_to_list(X,16)>>.
 
 -spec wait_for_response(I2C::pid(), {WaitExtra::boolean(), WaitStartTime::pos_integer()}, Cmd::#command{})
-                       -> {error, term()} | {ok, pos_integer()}.
+                       -> ok | {error, term()} | {ok, pos_integer()}.
 wait_for_response(_Pid, _, #command{spec=#spec{name=reset}}) ->
     ok;
 wait_for_response(_Pid, _, #command{spec=#spec{name=sleep}}) ->
