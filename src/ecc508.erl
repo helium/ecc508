@@ -773,9 +773,9 @@ command(Type, Param1, Param2, Data) ->
 command(wake) ->
     command(wake, <<0:8>>, <<0:16>>, <<0:184>>);
 command(idle) ->
-    command(idle, <<>>, <<>>, <<>>);
+    command(idle, <<0:8>>, <<0:16>>, <<>>);
 command(sleep) ->
-    command(sleep, <<>>, <<>>, <<>>);
+    command(sleep, <<0:8>>, <<0:16>>, <<>>);
 command(reset) ->
     command(reset, <<0:8>>, <<0:16>>, <<>>);
 command({genkey, private, KeyId}) ->
