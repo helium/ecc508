@@ -773,9 +773,9 @@ command(Type, Param1, Param2, Data) ->
 command(wake) ->
     command(wake, <<0:8>>, <<0:16>>, <<0:184>>);
 command(idle) ->
-    command(idle, <<0:8>>, <<0:16>>, <<>>);
+    command(idle, <<>>, <<>>, <<>>);
 command(sleep) ->
-    command(sleep, <<0:8>>, <<0:16>>, <<>>);
+    command(sleep, <<>>, <<>>, <<>>);
 command(reset) ->
     command(reset, <<0:8>>, <<0:16>>, <<>>);
 command({genkey, private, KeyId}) ->
@@ -883,6 +883,10 @@ execute(Pid, Cmd) ->
 
 -spec execute(I2C::pid(), Word::reset | idle | command | sleep, Cmd::#command{})
              -> ok | {ok, awake} | {ok, binary()} | {error, term()}.
+execute(Pid, Word, _) when Word == sleep; Word == idle ->
+    BinWord = package_word(Word),
+    i2c:write(Pid, <<BinWord:8/integer-unsigned>>),
+    ok;
 execute(Pid, Word, Cmd)->
     Data = <<(Cmd#command.spec#spec.opcode):8,
              (Cmd#command.param1)/binary,
