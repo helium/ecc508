@@ -873,8 +873,12 @@ read_response(_Pid, 0, Acc) ->
         false -> {error, ecc_checksum_failed}
     end;
 read_response(Pid, Length, Acc) ->
-    Bin = i2c:read(Pid, min(Length, 32)),
-    read_response(Pid, Length - byte_size(Bin), <<Acc/binary, Bin/binary>>).
+    case i2c:read(Pid, min(Length, 32)) of
+        {error, Error} ->
+            {error, Error};
+        Bin ->
+            read_response(Pid, Length - byte_size(Bin), <<Acc/binary, Bin/binary>>)
+    end.
 
 -spec execute(I2C::pid(), Cmd::#command{})
              -> ok | {ok, awake} | {ok, binary()} | {error, term()}.
