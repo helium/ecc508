@@ -544,9 +544,15 @@ ecdh(Pid, KeyId, {#'ECPoint'{point=PubPoint}, _}) ->
             {passthrough, msg_digest | tempkey | altkey} | {random, UpdateSeed::boolean()},
             Data::binary()) -> ok | {error, term()}.
 nonce(Pid, {passthrough, Target}, Data) ->
-    execute(Pid, command({nonce, {passthrough, Target}, Data}));
+    case execute(Pid, command({nonce, {passthrough, Target}, Data})) of
+        {ok, awake} -> {error, ecc_asleep};
+        Other -> Other
+    end;
 nonce(Pid, {random, UpdateSeed}, Data) when is_boolean(UpdateSeed) ->
-    execute(Pid, command({nonce, {random, UpdateSeed}, Data})).
+    case execute(Pid, command({nonce, {random, UpdateSeed}, Data})) of
+        {ok, awake} -> {error, ecc_asleep};
+        Other -> Other
+    end.
 
 
 %% @doc Generates a random series of bytes and update the seed. Note
@@ -558,7 +564,10 @@ random(Pid) ->
 
 -spec random(I2C::pid(), Seed::non_neg_integer()) -> {ok, binary()} | {error, term()}.
 random(Pid, Seed) ->
-    execute(Pid, command({random, Seed})).
+    case execute(Pid, command({random, Seed})) of
+        {ok, awake} -> {error, ecc_asleep};
+        Other -> Other
+    end.
 
 
 -record(digest, {
