@@ -924,6 +924,7 @@ execute(Pid, Word, Cmd)->
                 {ok, <<16#11>>} -> {ok, awake};
                 {ok, <<16#EE>>} -> {error, ecc_response_watchdog_exp};
                 {ok, <<16#FF>>} -> {error, ecc_response_comms_error};
+                {ok, <<V:8/unsigned-integer>>}   -> {error, {ecc_unknown_response, V}};
                 {ok, RespBin} -> {ok, RespBin}
             end
     end.
