@@ -3,7 +3,7 @@
 -include_lib("public_key/include/public_key.hrl").
 
 %% API exports
--export([start_link/0, start_link/1, stop/1,
+-export([start_link/0, start_link/1, start_link/2, stop/1,
          wake/1, idle/1, sleep/1, reset/1,
          serial_num/1,
          lock/2, lock/3,
@@ -64,7 +64,13 @@ start_link() ->
 %% default address and the default max count.
 - spec start_link(string()) -> {ok, pid()} | {error, term()}.
 start_link(DevName) ->
-    i2c:start_link(DevName, 16#60, ?CMDGRP_COUNT_MAX).
+    start_link(DevName, 16#60, ?CMDGRP_COUNT_MAX).
+
+%% @doc Start and link the ecc process with a given devname i2c bus, a
+%% given address and the default max count.
+- spec start_link(string(), integer()) -> {ok, pid()} | {error, term()}.
+start_link(DevName, Address) ->
+    i2c:start_link(DevName, Address, ?CMDGRP_COUNT_MAX).
 
 %% @doc Stops the given ecc process.
 stop(Pid) ->
