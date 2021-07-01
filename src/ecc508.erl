@@ -64,7 +64,7 @@ start_link() ->
 %% default address and the default max count.
 - spec start_link(string()) -> {ok, pid()} | {error, term()}.
 start_link(DevName) ->
-    start_link(DevName, 16#60, ?CMDGRP_COUNT_MAX).
+    start_link(DevName, 16#60).
 
 %% @doc Start and link the ecc process with a given devname i2c bus, a
 %% given address and the default max count.
