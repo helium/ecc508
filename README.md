@@ -1,5 +1,7 @@
 ecc508
 =====
+Note: the ECC608A or ECC608B is compliant with HIP-19. 
+The other chips in this family: ATSHA204A · ATECC108A · ATECC508A are not compliant with HIP-19.
 
 An OTP library for communicating with the [Microchip
 ATECC608A](http://ww1.microchip.com/downloads/en/DeviceDoc/20005927A.pdf)
