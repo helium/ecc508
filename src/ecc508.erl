@@ -83,8 +83,15 @@ stop(Pid) ->
 %% @doc Send a wake command to the ecc. This ensures that the ecc
 %% wakes up form its default sleep mode
 wake(Pid) ->
-    start_link("i2c-1", 16#00),
-    execute(Pid, command(wake)).
+    case i2c:start_link("i2c-1", 16#00, ?CMDGRP_COUNT_MAX) of
+        {ok, WakeHandle} ->
+            BinWord = package_word(00),
+            i2c:write(WakeHandle, <<BinWord:8/integer-unsigned>>),
+            i2c:stop(WakeHandle),
+            execute(Pid, command(wake));
+        {error, Error} ->
+            {error, Error}
+    end.
 
 %% @doc Sends an idle command to the ecc. This puts the ecc in idle
 %% state, which disables the sleep watchdog .A subsequent wake/1 call
