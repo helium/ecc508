@@ -83,6 +83,7 @@ stop(Pid) ->
 %% @doc Send a wake command to the ecc. This ensures that the ecc
 %% wakes up form its default sleep mode
 wake(Pid) ->
+    start_link("i2c-1", 16#00),
     execute(Pid, command(wake)).
 
 %% @doc Sends an idle command to the ecc. This puts the ecc in idle
