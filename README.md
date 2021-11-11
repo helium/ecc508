@@ -48,6 +48,7 @@ an Erlang shell to communicate with the ecc:
     $ cd ecc508
     $ ./rebar3 shell
     $ {ok, Pid} = ecc508:start_link().
+    $ ecc508:wake(Pid).
 
 Then check out the data-sheet linked above and the functions in the
 eec508 module to see how to access the various functions of the
