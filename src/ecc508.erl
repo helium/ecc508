@@ -912,7 +912,7 @@ read_response(_Pid, 0, Acc) ->
         false -> {error, ecc_checksum_failed}
     end;
 read_response(Pid, Length, Acc) ->
-    case i2c:read(Pid, min(Length, 32)) of
+    case i2c:read(Pid, Length) of
         {error, Error} ->
             {error, Error};
         Bin ->
