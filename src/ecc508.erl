@@ -87,7 +87,7 @@ wake(Pid) ->
     BinWord = 00,
     i2c:write(WakeHandle, <<BinWord:8/integer-unsigned>>),
     i2c:stop(WakeHandle),
-    case wait_for_response(Pid, {true, get_timestamp()}, command(wake)) of
+    case wait_for_response(Pid, {true, get_timestamp() + 2}, command(wake)) of
         {error, Error} ->
             {error, Error};
         ok ->
