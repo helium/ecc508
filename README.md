@@ -25,7 +25,7 @@ configured for development and enable I2C using `raspi-config`.
 Also install the Erlang development tools:
 
     $ sudo apt update
-    $ sudo apst install erlang-nox erlang-dev i2c-tools
+    $ sudo apt install erlang-nox erlang-dev i2c-tools
 
 Once you've set up your Raspberry Pi and wired up the ECC608A you
 should be able to see it using `i2cdetect`
