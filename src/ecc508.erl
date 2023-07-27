@@ -639,22 +639,17 @@ digest_finalize(Pid, State, FinalData) when byte_size(FinalData) =< 63 ->
 -spec sign(I2C::pid(), KeyId::non_neg_integer(), Data::binary() | {digest, binary()})
           -> {ok, binary()} | {error, term()}.
 sign(Pid, KeyId, {digest, Digest}) ->
-    case random(Pid) of
+    case nonce(Pid, {passthrough, msg_digest}, Digest) of
         {error, Error} ->
             {error, Error};
-        {ok, _} ->
-            case nonce(Pid, {passthrough, msg_digest}, Digest) of
+        ok ->
+            case execute(Pid, command({sign, {external, msg_digest, KeyId}})) of
                 {error, Error} ->
                     {error, Error};
-                ok ->
-                    case execute(Pid, command({sign, {external, msg_digest, KeyId}})) of
-                        {error, Error} ->
-                            {error, Error};
-                        {ok, awake} ->
-                            {error, ecc_asleep};
-                        {ok, <<R:256/unsigned-integer-big, S:256/unsigned-integer-big>>} ->
-                            {ok, public_key:der_encode('ECDSA-Sig-Value', #'ECDSA-Sig-Value'{r=R, s=S})}
-                    end
+                {ok, awake} ->
+                    {error, ecc_asleep};
+                {ok, <<R:256/unsigned-integer-big, S:256/unsigned-integer-big>>} ->
+                    {ok, public_key:der_encode('ECDSA-Sig-Value', #'ECDSA-Sig-Value'{r=R, s=S})}
             end
     end;
 sign(Pid, KeyId, Data) ->
